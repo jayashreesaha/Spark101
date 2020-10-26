@@ -1,0 +1,90 @@
+
+Skip to end of metadata
+Created by Shomit.Goyal, last modified on May 20, 2020Go to start of metadata
+python3.5 and newer versions come with a library called venv (part of python's standard library) which can be used to create a python virtual environment - a self contained copy of the python installation which is present on bigred cluster. This python environment will now reside on your edge node and can be used to install additional packages of your choice.
+
+Here is the step by step procedure to do this on bigred:
+
+Step 1: Create a virtual environment
+
+/usr/local/python3-tgt-201901/bin/python3 -m venv my-python-env
+
+this will create a copy of the python interpreter and place it inside 'my-python-env' directory.
+
+Step 2: In order to use this copy of python in interactive mode or to install any external packages you will need to activate the virtual environment that you have just created
+
+source my-python-env/bin/activate
+running this command will activate the virtual environment and your prompt will show the name of the environment. Typing 'python' now will take you to the copy of the python that you just created and not the original bigred installation. You may confirm that by typing 'which python' from the bash shell.
+
+With the virtual environment activated, to install external packages of your choice you can just simply use following pip command and the package will be installed to your virtual environment:
+
+pip install numpy
+you can list all your installed packages by running the 'list' command and verify that the newly installed package appears there
+
+pip list
+Step 3: To leave the virtual env and go back to the original environment execute the following command
+
+deactivate
+
+
+Map-reduce
+Using the newly installed python (and external packages) with map-reduce jobs:
+
+Use the following shebang (use the path where you have created your virtual environment) as the first line of your mapper and reducer executable scripts: 
+
+#!/home_dir/z0019c3/my-python-env/bin/python
+
+
+Spark
+
+Using the newly installed python (and external packages) with pyspark interactive shell:
+
+Simply point your pyspark python to your virtual env python installation, you can do so by adding the following to your .bashrc or equivalent file:
+
+export PYSPARK_PYTHON=/home_dir/z0019c3/my-python-env/bin/python
+
+
+Using the newly installed python (and external packages) with jupyter notebook:
+
+first install jupyter in your virtual environment then add the following to your .bashrc or equivalent file:
+
+export PYSPARK_PYTHON=/home_dir/z0019c3/my_python_venvs/basic_libraries/bin/python
+
+export PYSPARK_DRIVER_PYTHON=/home_dir/z0019c3/my_python_venvs/basic_libraries/bin/jupyter
+
+export PYSPARK_DRIVER_PYTHON_OPTS="notebook --ip=$(hostname) --no-browser"
+
+
+
+Using the newly installed python (and external packages) with spark-submit:
+
+set spark.pyspark.python and spark.pyspark.driver.python configurations to your virtual env python installation while submitting the job:
+
+/usr/local/bin/spark-submit-2.3 --conf spark.pyspark.python=/home_dir/z0019c3/my_python_venvs/content_science_poc/bin/python --conf spark.pyspark.driver.python=/home_dir/z0019c3/my_python_venvs/content_science_poc/bin/python test.py
+Like5 people like this
+No labelsEdit Labels
+5 Comments
+User icon: Z001C60
+Ashes.Das
+Sayon.Majumdar Please take a look at it
+
+ReplyLikeSayon.Majumdar likes thisJan 09, 2019
+User icon: Z073135
+Sayon.Majumdar
+Shomit.Goyal: Can you move this in a proper place, outside your home space. Brian.Copeland: Can you suggest a home for this page. This will be helpful all DSE folks.
+
+ReplyLikeJan 09, 2019
+User icon: Z0019C3
+Shomit.Goyal
+Sayon.Majumdar sure
+
+ReplyLikeJan 09, 2019
+User icon: Z013KV2
+Brian.Copeland
+I'm adding a link to it on the Data Science onboarding page, but it could just as easily be copy pasted.
+
+ReplyLike2 people like thisJan 10, 2019
+User icon: Z0019C3
+Shomit.Goyal
+Brian.Copeland Confluence let's you move pages as well, let me know if you want me to move it to 'Data Science Onboarding'  space.
+
