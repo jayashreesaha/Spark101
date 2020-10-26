@@ -1,0 +1,664 @@
+# Note the code runs in Bigred Cluster
+from pyspark.sql import types as pst
+from pyspark.sql import functions as psf
+
+1. Loading Bigred Tables
+
+# Loading Sales Table
+cols = ["ecom_item_i", "week_start_date", "units"]
+online_sales = spark.sql("select * from prd_clr2_fnd.web_weekly_sales").cache().select(*cols)
+online_sales.show(2)
+
+# Loading Holidays Table
+holidays = spark.sql("select * from prd_assortment_ddn.week_holiday_list")
+holidays = holidays.select("week_start_date", "week_end_date", "holiday_actual").distinct()
+holidays = holidays.groupby(["week_start_date", "week_end_date"]).agg(
+    psf.collect_list("holiday_actual").alias("holiday")
+).cache()
+
+holidays.show(2)
++-----------+---------------+-----+
+|ecom_item_i|week_start_date|units|
++-----------+---------------+-----+
+| 1010327169|     2017-04-30|   10|
+| 1010327169|     2017-05-28|   12|
++-----------+---------------+-----+
+only showing top 2 rows
+
++---------------+-------------+--------------------+
+|week_start_date|week_end_date|             holiday|
++---------------+-------------+--------------------+
+|     2021-02-28|   2021-03-06|                [NA]|
+|     2019-03-03|   2019-03-09|[mardigras, NA, a...|
++---------------+-------------+--------------------+
+only showing top 2 rows
+
+2. GroupBy
+Similar to SQL GROUP BY clause, PySpark groupBy() function is used to collect the identical data into groups on DataFrame and perform aggregate functions on the grouped data
+
+count()
+mean()
+max()
+min()
+sum()
+avg()
+pivot()
+agg()
+
+In [3]:
+# Grouping by and collecting as list
+groupedby_sales = online_sales.groupby(["ecom_item_i"]).agg(psf.collect_list("units").alias("units"))
+groupedby_sales.show(2)
++-----------+--------------------+
+|ecom_item_i|               units|
++-----------+--------------------+
+| 1010350278|[2, 1, 1, 1, 1, 1...|
+| 1010373548|[1, 1, 2, 2, 1, 1...|
++-----------+--------------------+
+only showing top 2 rows
+
+In [4]:
+# Grouping and performing action
+groupedby_sales = online_sales.groupby(["ecom_item_i"]).agg(psf.sum("units").alias("units"))
+groupedby_sales.show(2)
++-----------+-----+
+|ecom_item_i|units|
++-----------+-----+
+| 1010350278|   22|
+| 1010373548|   76|
++-----------+-----+
+only showing top 2 rows
+
+3. Partitioning - changing the default partitions
+Data within RDD is split into several partitions.
+
+Properties:
+
+Never spans multiple machines or executors
+Number of partitions is configurable
+Each machine in the cluster contains one or more partitions
+Default number of partitions: Total number of cores on all executor nodes
+
+Partitions Types:
+
+Hash partitioning
+Range partitioning
+Hash partitioning p = k.hashCode() % numPartitions
+
+where: k - key p - partition identifier
+
+Range Partitions: When keys have an ordering defined.
+
+Using range partitioner, keys are partitioned according to:
+
+an ordering for keys
+a set of sorted ranges for keys
+NOTE: From Spark 2.4 and above repartitionByRange is available
+
+df.repartitionByRange(npartitions, "PartitionIndex")
+
+Example
+
+Suppose keys are [8, 96, 240, 400, 401, 800]. Desired number of partitions is 4.
+
+Hash Partitioning: (Unbalanced)
+
+Partition 0: [8, 96, 240, 400, 800]
+Partition 1: [401]
+Partition 3: []
+Partition 4: []
+Range Partitioning: (Balanced) Set of ranges: [1, 200], [201, 400], [401, 600], [601, 800]
+
+Partition 0: [8, 96]
+Partition 1: [240, 400]
+Partition 3: [401]
+Partition 4: [800]
+In [5]:
+# Current number of partitions
+print("Number of partitions currently {}".format(online_sales.rdd.getNumPartitions()))
+
+# Hash partitioning by specific column
+sales_repartitioned = online_sales.repartition("week_start_date")
+print("Number of partitions after partitioning by week_start_date {}".format(
+    sales_repartitioned.rdd.getNumPartitions())
+)
+
+# Hash partitioning by total number of partitions
+sales_repartitioned_number = online_sales.repartition(10)
+print("Number of partitions after partitioning into 10 partitions {}".format(
+    sales_repartitioned_number.rdd.getNumPartitions())
+)
+
+# Partitioning on number of partitions and columns
+sales_repartitioned_number = online_sales.repartition(10, "week_start_date")
+print("Number of partitions {} and partitioned by week_start_date".format(
+    sales_repartitioned_number.rdd.getNumPartitions())
+)
+Number of partitions currently 1
+Number of partitions after partitioning by week_start_date 200
+Number of partitions after partitioning into 10 partitions 10
+Number of partitions 10 and partitioned by week_start_date
+Custom Partitioning:
+
+It provides a mechanism to adjust the size and number of partitions or the partitioning scheme according to the needs of our application.
+
+In [6]:
+# Custom Partitioning Example
+df = spark.read.csv("file:///home_dir/z002957/spark_data.csv", header=True, inferSchema=True)
+df = df.drop("Item_Count", "po_begin_date", "Cluster_Index")
+df = df.withColumn("assigned_partition_index", psf.spark_partition_id())
+df.show(5)
++------+-------+---------+----+-----------+--------------+---------------+------------------------+
+|DEPT_I| VEND_I|VEND_OP_I|DC_I|Slice_Index|item_locations|Partition_Index|assigned_partition_index|
++------+-------+---------+----+-----------+--------------+---------------+------------------------+
+|    94|1103663|        4| 551|          0|            -1|             31|                       0|
+|   261|1082373|        2| 551|          0|            -1|             28|                       0|
+|    52|1109450|        3| 551|          0|            -1|             34|                       0|
+|   245|1106660|        4| 551|          0|            -1|             35|                       0|
+|   212|1012000|        2| 551|          0|            -1|             36|                       0|
++------+-------+---------+----+-----------+--------------+---------------+------------------------+
+only showing top 5 rows
+
+In [7]:
+n_partitions = df.selectExpr("max(Partition_Index)").collect()[0][0] + 1
+print("Number of partitions needed {}".format(n_partitions))
+
+# Paired RDD (key, value)
+# Custom partitioning
+# No longer need paired RDD (only values)
+custom_partitioned_rdd = df \
+    .rdd \
+    .map(lambda row: (row["Partition_Index"], row)) \
+    .partitionBy(n_partitions, lambda pidx: pidx % n_partitions) \
+    .map(lambda row: row[1]) 
+
+print("Number of partitions granted {}".format(custom_partitioned_rdd.getNumPartitions()))
+custom_df = custom_partitioned_rdd.toDF().withColumn(
+    "assigned_partition_index", psf.spark_partition_id())
+custom_df.show()
+Number of partitions needed 38
+Number of partitions granted 38
+/home_dir/z002957/.local/lib/python3.7/site-packages/pandas/compat/__init__.py:117: UserWarning: Could not import the lzma module. Your installed Python is incomplete. Attempting to use lzma compression will result in a RuntimeError.
+  warnings.warn(msg)
++------+-------+---------+----+-----------+--------------+---------------+------------------------+
+|DEPT_I| VEND_I|VEND_OP_I|DC_I|Slice_Index|item_locations|Partition_Index|assigned_partition_index|
++------+-------+---------+----+-----------+--------------+---------------+------------------------+
+|    37|2803069|        5| 578|          0|         23864|              0|                       0|
+|    37|2803069|        5| 593|          0|         21287|              1|                       1|
+|    37|2803069|        5|3811|          0|         21186|              2|                       2|
+|    37|2803069|        5| 557|          0|         20549|              3|                       3|
+|    37|2803069|        5|3802|          0|         20484|              4|                       4|
+|    37|2803069|        5| 560|          0|         20128|              5|                       5|
+|    37|2803069|        5| 555|          0|         19853|              6|                       6|
+|    37|2803069|        5| 587|          0|         19726|              7|                       7|
+|    37|2803069|        5|3804|          0|         18985|              8|                       8|
+|    37|2803069|        5| 579|          0|         18694|              9|                       9|
+|    37|2803069|        5|3806|          0|         18294|             10|                      10|
+|    37|2803069|        5| 559|          0|         17945|             11|                      11|
+|    37|2803069|        5| 553|          0|         17765|             12|                      12|
+|    37|2803069|        5|3803|          0|         17473|             13|                      13|
+|    37|2803069|        5| 588|          0|         17188|             14|                      14|
+|    37|2803069|        5| 589|          0|         17157|             15|                      15|
+|    37|2803069|        5| 556|          0|         17112|             16|                      16|
+|    37|2803069|        5| 580|          0|         16836|             17|                      17|
+|    37|2803069|        5| 558|          0|         16671|             18|                      18|
+|    37|2803069|        5| 590|          0|         15101|             19|                      19|
++------+-------+---------+----+-----------+--------------+---------------+------------------------+
+only showing top 20 rows
+
+=====================================================================================================================
+
+4. Coalesce - reducing number of partitions
+In [8]:
+# Reducing number of partitions to 10 from 100
+print("Number of partitions before {} and after coalescing {}".format(
+    sales_repartitioned.rdd.getNumPartitions(),
+    sales_repartitioned.coalesce(10).rdd.getNumPartitions()
+))
+Number of partitions before 200 and after coalescing 10
+=====================================================================================================================
+
+5. Union of Dataframes
+Union() It is used to combine two DataFrames of the same structure/schema.
+
+Note: If schemas are not the same it returns an error.
+
+In [9]:
+df1 = online_sales.filter("week_start_date = '2017-04-30'").limit(5)
+df2 = online_sales.filter("week_start_date = '2017-05-28'").limit(5)
+
+union_df = df1.union(df2)
+union_df.show()
++-----------+---------------+-----+
+|ecom_item_i|week_start_date|units|
++-----------+---------------+-----+
+| 1010327169|     2017-04-30|   10|
+| 1010327433|     2017-04-30|   26|
+| 1010327898|     2017-04-30|    1|
+| 1010328380|     2017-04-30|   36|
+| 1010329839|     2017-04-30|   13|
+| 1010327169|     2017-05-28|   12|
+| 1010327842|     2017-05-28|    1|
+| 1010327898|     2017-05-28|    1|
+| 1010328687|     2017-05-28|    1|
+| 1010330740|     2017-05-28|    1|
++-----------+---------------+-----+
+
+=====================================================================================================================
+
+6. BroadCast Variables
+broadcast_input.pngboradcast_output.png
+
+Sending read-only variables to all nodes (Default is 10MB, max upto 8GB)
+
+Why we need it?
+
+If same variable is used multiple times, Spark will send it separately for each operation
+
+In [10]:
+words_new = sc.broadcast(["scala", "java", "hadoop", "spark", "akka"])
+data = words_new.value
+print("Stored data {}".format(data))
+elem = words_new.value[2]
+print("Printing a particular element '{}' in broadcasted data".format(elem))
+print(type(words_new))
+Stored data ['scala', 'java', 'hadoop', 'spark', 'akka']
+Printing a particular element 'hadoop' in broadcasted data
+<class 'pyspark.broadcast.Broadcast'>
+=====================================================================================================================
+
+7. Joins
+Left Joinleft_join.png
+
+Right Joinright_join.png
+
+Inner Joininner_join.png
+
+Outer Joinouter_join.png
+
+Left Semi Join Only the data on the left side that has a match on the right side will be returned based on the condition in on.
+
+NOTE: Right-hand table data is omitted from the output.
+
+left_semi_join.png
+
+Left Anti Join It does the exact opposite of left semi-join. It simply returns data that does not match in the right table.
+
+left_anti_join.png
+
+In [11]:
+# Left Semi-Join Example
+heroes_data = [
+    ('Deadpool', 3), 
+    ('Iron man', 1),
+    ('Groot', 7),
+]
+race_data = [
+    ('Kryptonian', 5), 
+    ('Mutant', 3), 
+    ('Human', 1), 
+]
+heroes = spark.createDataFrame(heroes_data, ['name', 'id'])
+races = spark.createDataFrame(race_data, ['race', 'id'])
+
+heroes.show()
+races.show()
+heroes.join(races, on='id', how='leftsemi').show()
++--------+---+
+|    name| id|
++--------+---+
+|Deadpool|  3|
+|Iron man|  1|
+|   Groot|  7|
++--------+---+
+
++----------+---+
+|      race| id|
++----------+---+
+|Kryptonian|  5|
+|    Mutant|  3|
+|     Human|  1|
++----------+---+
+
++---+--------+
+| id|    name|
++---+--------+
+|  1|Iron man|
+|  3|Deadpool|
++---+--------+
+
+In [12]:
+multiple_ids = heroes.join(races, (heroes.id == races.id))
+multiple_ids.show()
+multiple_ids.printSchema()
+
+# Selecting id will create spark error
+multiple_ids.select("id")
++--------+---+------+---+
+|    name| id|  race| id|
++--------+---+------+---+
+|Iron man|  1| Human|  1|
+|Deadpool|  3|Mutant|  3|
++--------+---+------+---+
+
+root
+ |-- name: string (nullable = true)
+ |-- id: long (nullable = true)
+ |-- race: string (nullable = true)
+ |-- id: long (nullable = true)
+
+---------------------------------------------------------------------------
+Py4JJavaError                             Traceback (most recent call last)
+/usr/share/spark-tgt-2.3.1.tgt.17/python/pyspark/sql/utils.py in deco(*a, **kw)
+     62         try:
+---> 63             return f(*a, **kw)
+     64         except py4j.protocol.Py4JJavaError as e:
+
+/usr/share/spark-tgt-2.3.1.tgt.17/python/lib/py4j-0.10.7-src.zip/py4j/protocol.py in get_return_value(answer, gateway_client, target_id, name)
+    327                     "An error occurred while calling {0}{1}{2}.\n".
+--> 328                     format(target_id, ".", name), value)
+    329             else:
+
+Py4JJavaError: An error occurred while calling o214.select.
+: org.apache.spark.sql.AnalysisException: Reference 'id' is ambiguous, could be: id, id.;
+	at org.apache.spark.sql.catalyst.plans.logical.LogicalPlan.resolve(LogicalPlan.scala:213)
+	at org.apache.spark.sql.catalyst.plans.logical.LogicalPlan.resolveChildren(LogicalPlan.scala:97)
+	at org.apache.spark.sql.catalyst.analysis.Analyzer$ResolveReferences$$anonfun$36.apply(Analyzer.scala:822)
+	at org.apache.spark.sql.catalyst.analysis.Analyzer$ResolveReferences$$anonfun$36.apply(Analyzer.scala:824)
+	at org.apache.spark.sql.catalyst.analysis.package$.withPosition(package.scala:53)
+	at org.apache.spark.sql.catalyst.analysis.Analyzer$ResolveReferences$.org$apache$spark$sql$catalyst$analysis$Analyzer$ResolveReferences$$resolve(Analyzer.scala:821)
+	at org.apache.spark.sql.catalyst.analysis.Analyzer$ResolveReferences$$anonfun$org$apache$spark$sql$catalyst$analysis$Analyzer$ResolveReferences$$resolve$2.apply(Analyzer.scala:830)
+	at org.apache.spark.sql.catalyst.analysis.Analyzer$ResolveReferences$$anonfun$org$apache$spark$sql$catalyst$analysis$Analyzer$ResolveReferences$$resolve$2.apply(Analyzer.scala:830)
+	at org.apache.spark.sql.catalyst.trees.TreeNode$$anonfun$4.apply(TreeNode.scala:306)
+	at org.apache.spark.sql.catalyst.trees.TreeNode.mapProductIterator(TreeNode.scala:187)
+	at org.apache.spark.sql.catalyst.trees.TreeNode.mapChildren(TreeNode.scala:304)
+	at org.apache.spark.sql.catalyst.analysis.Analyzer$ResolveReferences$.org$apache$spark$sql$catalyst$analysis$Analyzer$ResolveReferences$$resolve(Analyzer.scala:830)
+	at org.apache.spark.sql.catalyst.analysis.Analyzer$ResolveReferences$$anonfun$apply$9$$anonfun$applyOrElse$36.apply(Analyzer.scala:891)
+	at org.apache.spark.sql.catalyst.analysis.Analyzer$ResolveReferences$$anonfun$apply$9$$anonfun$applyOrElse$36.apply(Analyzer.scala:891)
+	at org.apache.spark.sql.catalyst.plans.QueryPlan$$anonfun$1.apply(QueryPlan.scala:107)
+	at org.apache.spark.sql.catalyst.plans.QueryPlan$$anonfun$1.apply(QueryPlan.scala:107)
+	at org.apache.spark.sql.catalyst.trees.CurrentOrigin$.withOrigin(TreeNode.scala:70)
+	at org.apache.spark.sql.catalyst.plans.QueryPlan.transformExpression$1(QueryPlan.scala:106)
+	at org.apache.spark.sql.catalyst.plans.QueryPlan.org$apache$spark$sql$catalyst$plans$QueryPlan$$recursiveTransform$1(QueryPlan.scala:118)
+	at org.apache.spark.sql.catalyst.plans.QueryPlan$$anonfun$org$apache$spark$sql$catalyst$plans$QueryPlan$$recursiveTransform$1$1.apply(QueryPlan.scala:122)
+	at scala.collection.TraversableLike$$anonfun$map$1.apply(TraversableLike.scala:234)
+	at scala.collection.TraversableLike$$anonfun$map$1.apply(TraversableLike.scala:234)
+	at scala.collection.mutable.ResizableArray$class.foreach(ResizableArray.scala:59)
+	at scala.collection.mutable.ArrayBuffer.foreach(ArrayBuffer.scala:48)
+	at scala.collection.TraversableLike$class.map(TraversableLike.scala:234)
+	at scala.collection.AbstractTraversable.map(Traversable.scala:104)
+	at org.apache.spark.sql.catalyst.plans.QueryPlan.org$apache$spark$sql$catalyst$plans$QueryPlan$$recursiveTransform$1(QueryPlan.scala:122)
+	at org.apache.spark.sql.catalyst.plans.QueryPlan$$anonfun$2.apply(QueryPlan.scala:127)
+	at org.apache.spark.sql.catalyst.trees.TreeNode.mapProductIterator(TreeNode.scala:187)
+	at org.apache.spark.sql.catalyst.plans.QueryPlan.mapExpressions(QueryPlan.scala:127)
+	at org.apache.spark.sql.catalyst.analysis.Analyzer$ResolveReferences$$anonfun$apply$9.applyOrElse(Analyzer.scala:891)
+	at org.apache.spark.sql.catalyst.analysis.Analyzer$ResolveReferences$$anonfun$apply$9.applyOrElse(Analyzer.scala:833)
+	at org.apache.spark.sql.catalyst.trees.TreeNode$$anonfun$transformUp$1.apply(TreeNode.scala:289)
+	at org.apache.spark.sql.catalyst.trees.TreeNode$$anonfun$transformUp$1.apply(TreeNode.scala:289)
+	at org.apache.spark.sql.catalyst.trees.CurrentOrigin$.withOrigin(TreeNode.scala:70)
+	at org.apache.spark.sql.catalyst.trees.TreeNode.transformUp(TreeNode.scala:288)
+	at org.apache.spark.sql.catalyst.analysis.Analyzer$ResolveReferences$.apply(Analyzer.scala:833)
+	at org.apache.spark.sql.catalyst.analysis.Analyzer$ResolveReferences$.apply(Analyzer.scala:690)
+	at org.apache.spark.sql.catalyst.rules.RuleExecutor$$anonfun$execute$1$$anonfun$apply$1.apply(RuleExecutor.scala:87)
+	at org.apache.spark.sql.catalyst.rules.RuleExecutor$$anonfun$execute$1$$anonfun$apply$1.apply(RuleExecutor.scala:84)
+	at scala.collection.LinearSeqOptimized$class.foldLeft(LinearSeqOptimized.scala:124)
+	at scala.collection.immutable.List.foldLeft(List.scala:84)
+	at org.apache.spark.sql.catalyst.rules.RuleExecutor$$anonfun$execute$1.apply(RuleExecutor.scala:84)
+	at org.apache.spark.sql.catalyst.rules.RuleExecutor$$anonfun$execute$1.apply(RuleExecutor.scala:76)
+	at scala.collection.immutable.List.foreach(List.scala:381)
+	at org.apache.spark.sql.catalyst.rules.RuleExecutor.execute(RuleExecutor.scala:76)
+	at org.apache.spark.sql.catalyst.analysis.Analyzer.org$apache$spark$sql$catalyst$analysis$Analyzer$$executeSameContext(Analyzer.scala:124)
+	at org.apache.spark.sql.catalyst.analysis.Analyzer.execute(Analyzer.scala:118)
+	at org.apache.spark.sql.catalyst.analysis.Analyzer.executeAndCheck(Analyzer.scala:103)
+	at org.apache.spark.sql.execution.QueryExecution.analyzed$lzycompute(QueryExecution.scala:57)
+	at org.apache.spark.sql.execution.QueryExecution.analyzed(QueryExecution.scala:55)
+	at org.apache.spark.sql.execution.QueryExecution.assertAnalyzed(QueryExecution.scala:47)
+	at org.apache.spark.sql.Dataset$.ofRows(Dataset.scala:74)
+	at org.apache.spark.sql.Dataset.org$apache$spark$sql$Dataset$$withPlan(Dataset.scala:3296)
+	at org.apache.spark.sql.Dataset.select(Dataset.scala:1307)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:497)
+	at py4j.reflection.MethodInvoker.invoke(MethodInvoker.java:244)
+	at py4j.reflection.ReflectionEngine.invoke(ReflectionEngine.java:357)
+	at py4j.Gateway.invoke(Gateway.java:282)
+	at py4j.commands.AbstractCommand.invokeMethod(AbstractCommand.java:132)
+	at py4j.commands.CallCommand.execute(CallCommand.java:79)
+	at py4j.GatewayConnection.run(GatewayConnection.java:238)
+	at java.lang.Thread.run(Thread.java:745)
+
+
+During handling of the above exception, another exception occurred:
+
+AnalysisException                         Traceback (most recent call last)
+<ipython-input-12-b767c4887edf> in <module>
+      4 
+      5 # Selecting id will create spark error
+----> 6 multiple_ids.select("id")
+
+/usr/share/spark-tgt-2.3.1.tgt.17/python/pyspark/sql/dataframe.py in select(self, *cols)
+   1200         [Row(name=u'Alice', age=12), Row(name=u'Bob', age=15)]
+   1201         """
+-> 1202         jdf = self._jdf.select(self._jcols(*cols))
+   1203         return DataFrame(jdf, self.sql_ctx)
+   1204 
+
+/usr/share/spark-tgt-2.3.1.tgt.17/python/lib/py4j-0.10.7-src.zip/py4j/java_gateway.py in __call__(self, *args)
+   1255         answer = self.gateway_client.send_command(command)
+   1256         return_value = get_return_value(
+-> 1257             answer, self.gateway_client, self.target_id, self.name)
+   1258 
+   1259         for temp_arg in temp_args:
+
+/usr/share/spark-tgt-2.3.1.tgt.17/python/pyspark/sql/utils.py in deco(*a, **kw)
+     67                                              e.java_exception.getStackTrace()))
+     68             if s.startswith('org.apache.spark.sql.AnalysisException: '):
+---> 69                 raise AnalysisException(s.split(': ', 1)[1], stackTrace)
+     70             if s.startswith('org.apache.spark.sql.catalyst.analysis'):
+     71                 raise AnalysisException(s.split(': ', 1)[1], stackTrace)
+
+AnalysisException: "Reference 'id' is ambiguous, could be: id, id.;"
+In [13]:
+heroes.join(races, "id").show()
++---+--------+------+
+| id|    name|  race|
++---+--------+------+
+|  1|Iron man| Human|
+|  3|Deadpool|Mutant|
++---+--------+------+
+
+7.a) BroadCast Join
+broadcast_join.png
+
+It has two phases:
+
+Broadcast: Caching of smaller dataset across the executors in the cluster
+Hash Join: Standard hash join performed on each executor
+When to use it?
+
+Broadcasted dataset can completely fit the driver and executors in memory
+Only supported for “=“ join
+Supported for all join types (inner, left, right) except full outer joins
+BroadCast Limitations
+
+Default Value: 10MB
+Maximum Limit: 8GB
+Configurable by: spark.sql.autoBroadcastJoinThreshold
+
+In [14]:
+# Small table -> holidays
+# Big table -> online_sales
+broadcasted_holidays = psf.broadcast(holidays)
+broadcast_merged_table = online_sales.join(broadcasted_holidays, on=["week_start_date"], how="left")
+broadcast_merged_table.show(2, False)
++---------------+-----------+-----+-------------+-------------------------------------+
+|week_start_date|ecom_item_i|units|week_end_date|holiday                              |
++---------------+-----------+-----+-------------+-------------------------------------+
+|2017-04-30     |1010327169 |10   |2017-05-06   |[cincodemayo, NA]                    |
+|2017-05-28     |1010327169 |12   |2017-06-03   |[NA, memorialday, memorialday.minus1]|
++---------------+-----------+-----+-------------+-------------------------------------+
+only showing top 2 rows
+
+7.b) Shuffle Hash Join
+shuffle_join.png
+
+Follows classic map-reduce pattern:
+
+Map: Map through two tables (dataframes)
+
+Shuffle: Shuffles both dataframes by output key, so that rows related to same keys are moved on to the same machine
+
+Reducer: Join the two datasets
+
+When to use?
+
+When dataframes are distributed evenly with the keys
+When dataframes have enough number of keys for parallelism
+If one side is small enough to build a local hash map
+Only supported for “=“ join
+Supported for all join types (inner, left, right) except full outer joins
+Properties:
+
+Can be only used when spark.sql.join.preferSortMergeJoin is set to False
+
+6.c) Shuffle Sort Merge Join
+sort_merge_join.png
+
+Three phases of sort Merge join:
+
+Shuffle Phase: The 2 big tables are repartitioned as per the join keys across the partition in the cluster to get same join_key with the same worker
+
+Sort Phase: Sort the data within each partition parallelly
+
+Merge Phase: Join the 2 sorted and partitioned data. Merging by iterating over the elements and joining the rows having the same value for the join key.
+
+When to use?
+
+When both tables are very large
+When join keys are sortable
+Supported for all join types
+Properties:
+
+Default join strategy
+Highly scalable approach
+In [15]:
+# Default Join
+sort_merged_join = online_sales.join(holidays, on=["week_start_date"])
+sort_merged_join.show(2)
++---------------+-----------+-----+-------------+--------------------+
+|week_start_date|ecom_item_i|units|week_end_date|             holiday|
++---------------+-----------+-----+-------------+--------------------+
+|     2017-04-30| 1010327169|   10|   2017-05-06|   [cincodemayo, NA]|
+|     2017-05-28| 1010327169|   12|   2017-06-03|[NA, memorialday,...|
++---------------+-----------+-----+-------------+--------------------+
+only showing top 2 rows
+
+In [16]:
+# Renaming column
+holidays_modified = holidays.withColumnRenamed("week_start_date", "wk_srt_date")
+holidays_modified.show(2)
++-----------+-------------+--------------------+
+|wk_srt_date|week_end_date|             holiday|
++-----------+-------------+--------------------+
+| 2021-02-28|   2021-03-06|                [NA]|
+| 2019-03-03|   2019-03-09|[mardigras, NA, a...|
++-----------+-------------+--------------------+
+only showing top 2 rows
+
+In [17]:
+# Joining on different keys
+join_different_keys = online_sales.join(
+    holidays_modified, online_sales.week_start_date == holidays_modified.wk_srt_date
+)
+join_different_keys.printSchema()
+join_different_keys.show(2)
+root
+ |-- ecom_item_i: integer (nullable = true)
+ |-- week_start_date: string (nullable = true)
+ |-- units: long (nullable = true)
+ |-- wk_srt_date: string (nullable = true)
+ |-- week_end_date: string (nullable = true)
+ |-- holiday: array (nullable = true)
+ |    |-- element: string (containsNull = true)
+
++-----------+---------------+-----+-----------+-------------+--------------------+
+|ecom_item_i|week_start_date|units|wk_srt_date|week_end_date|             holiday|
++-----------+---------------+-----+-----------+-------------+--------------------+
+| 1010327169|     2017-04-30|   10| 2017-04-30|   2017-05-06|   [cincodemayo, NA]|
+| 1010327169|     2017-05-28|   12| 2017-05-28|   2017-06-03|[NA, memorialday,...|
++-----------+---------------+-----+-----------+-------------+--------------------+
+only showing top 2 rows
+
+In [18]:
+# Always filter before joining i.e. reduce data as much as possible
+holidays_filtered = holidays_modified.filter('wk_srt_date >= "2017-05-14" and wk_srt_date <= "2020-09-14"')
+
+join_different_keys = online_sales.join(
+    holidays_filtered,
+    online_sales.week_start_date == holidays_filtered.wk_srt_date
+)
+join_different_keys.show(2)
++-----------+---------------+-----+-----------+-------------+--------------------+
+|ecom_item_i|week_start_date|units|wk_srt_date|week_end_date|             holiday|
++-----------+---------------+-----+-----------+-------------+--------------------+
+| 1010327169|     2017-05-28|   12| 2017-05-28|   2017-06-03|[NA, memorialday,...|
+| 1010327169|     2017-06-11|   11| 2017-06-11|   2017-06-17|[NA, fathersday.m...|
++-----------+---------------+-----+-----------+-------------+--------------------+
+only showing top 2 rows
+
+In [19]:
+# Joining on relational conditions
+join_multi_cond = online_sales.join(
+    holidays_filtered,
+    (online_sales.week_start_date >= holidays_filtered.wk_srt_date) 
+)
+join_multi_cond.show(2)
++-----------+---------------+-----+-----------+-------------+--------------------+
+|ecom_item_i|week_start_date|units|wk_srt_date|week_end_date|             holiday|
++-----------+---------------+-----+-----------+-------------+--------------------+
+| 1010327169|     2017-05-28|   12| 2017-05-28|   2017-06-03|[NA, memorialday,...|
+| 1010327169|     2017-05-28|   12| 2017-05-21|   2017-05-27|                [NA]|
++-----------+---------------+-----+-----------+-------------+--------------------+
+only showing top 2 rows
+
+In [20]:
+# Multiple conditions join
+s1 = spark.sql("select * from prd_clr2_fnd.online_sales").select("sls_d", "ecom_item_i", "ord_line_ord_q")
+relational_join = s1.join(holidays, (s1.sls_d >= holidays.week_start_date) & (s1.sls_d < holidays.week_end_date))
+relational_join.show(2)
++----------+-----------+--------------+---------------+-------------+--------------------+
+|     sls_d|ecom_item_i|ord_line_ord_q|week_start_date|week_end_date|             holiday|
++----------+-----------+--------------+---------------+-------------+--------------------+
+|2020-05-13| 1010329846|             1|     2020-05-10|   2020-05-16|    [NA, mothersday]|
+|2019-02-13| 1010329846|             1|     2019-02-10|   2019-02-16|[NA, valentines.m...|
++----------+-----------+--------------+---------------+-------------+--------------------+
+only showing top 2 rows
+
+=====================================================================================================================
+
+8. Optimizing Joins
+One Small Table
+uneven_parallelism.png
+
+uneven_parallelism_fixed.png
+
+=====================================================================================================================
+
+Filter Before Joining
+performance1.pngperformance2.pngperformance3.png
+
+=====================================================================================================================
+
+Whats the Tipping Point for Huge Dataset
+Avoid Joins as much as possible
+Filter/ reduce data before joining
+Understanding the data and its unique properties in order to best optimize for Spark operation
+
+memory_usage.png
+
+Things to Look for
+
+Tasks that take too much longer than others
+Speculative tasks that are launching
+Shards that have a lot more input or shuffle output
