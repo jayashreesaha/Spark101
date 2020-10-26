@@ -1,0 +1,571 @@
+
+1. Problem Statement: what are we trying to solve?
+business: we want to recommend and deliver digital ad campaigns on Target’s online platforms.
+
+brainstorm: we want to utilize target's digital real estate to promote and advertise the products of our vendor parners, hence cashing in on 2 way revenue stream:
+
+advertising revenue from the vendors.
+sales revenue from selling our products.
+But how do we maximize the potential reward from this revenue stream:
+
+We want guests to click on the advertisements, so we would want to deliver ads that are relevant for the guest to generate high click through rates. If we consistently deliver high ad campaign performance we can influence our vendors to pay us for the premium inventory cost.
+There are multiple campaigns that run simultaneously in the digital marketing ecosystem at any given point in time. All the campaigns have their individual delivery goals with respect to spending budget, number of impressions, and the delivery patterns. We need to make sure that these constraints are met.
+2. Solution Outline: how do we solve the problem?
+We look back at the smaller pieces of the problem that came out of the brainstorming process and try to list down the tasks that can be formulated as machine learning models at a later point. Please note that at this point we are not interested in identifying the modeling technique rather we just want to outline the modeling objectives. In this case some of the initial modeling requirements are as follows:
+
+We need a model to identify how relevant a particular ad is to a particular guest in a particular situation.
+We need an optimization method to automatically throttle the delivery rates and patterns to meet the campaign budget goals and other constraints.
+We will need a forecasting model to estimate the future traffic patterns on Target's digital platforms.
+We will need a real-time feedback loop and strategy to automatically tweak the delivery pattern based on the recent patterns.
+3. Technical Considerations: which type of modelling technique suits best?
+We can measure the relevance of an ad by the fact that whether or not the ad was clicked. So serving relevant ads can objectively be thought of as a binary classification task with the goal of predicting whether the ad is going to get clicked or not. Click prediction can be done in various ways:
+
+Contextual targeting: based on what the guest is currenly looking at, tens of millions of contexts, computationally less expensive and generalizable, 'context is king' based ideology.
+Behavioural targeting: suffers from cold start problem, hundreds of millions of guests, computationally more expensive and can't be generalized easily, 'past behaviour is indicative of future behaviour' based ideology. Ad delivery pacing will be more complicated (we'll understand this later).
+Hybrid approach: combination of contextual and behavioural targeting, computationally very expensive hundreds of trillions of guest-context-campaign pairs.
+A budget allocation and pacing algorithm to ensure uniform delivery and achieve delivery goals.
+
+literature review to understand how DSPs typically operate in an ecosystem where there are multiple campaigns running simultaeously.
+we'll likely need a forecasting model to forecast either the number of page views for every context in our universe, or a forecast of guest trips depending on our choice of targeting approach.
+we'll likely need an algorithm for dynamic throttling of pacing rates based on the real-tim feedback loop.
+4. Lets pen down the model architecture
+Based on the strengths and weeknesses of the contextual and behavioural targeting approaches and with the principal of starting simple and adding complexities later, we will go ahead with the contextual targeting. What this means is that in our classification setting every observation will be a pair of an ad and a context and the modelling objective will be to find out the probability of click for the pair.
+
+Data Sources
+
+dataset	description	what is it used for
+prd_dfpext_fnd.network_events	contains historical ad events on target.com every row corresponds to an ad impression	we'll pull historical creative - context combinations and a label indicating whether the pair led to a click or not
+prd_dfpext_fnd.creatives	contains creative metadata	we'll pull campaign description associated to historical creatives
+prd_prz_catalog.catalog_item_promo	contains item attributes	we'll pull context descriptions
+campaign descriptionproduct descriptionmodel architecture diagram
+
+Features
+
+word2vec feature vectors for context and ad descriptions and their cosine similarity.
+historical rolling context click through rates.
+historical rolling campaign click through rates.
+5. Implementation
+5.1 Import libraries and initiate spark session
+In [1]:
+from pyspark.sql import SparkSession, DataFrame
+import pyspark.sql.functions as psf
+import pyspark.sql.types as pst
+
+import matplotlib.pyplot as plt
+%matplotlib inline
+
+spark = SparkSession \
+    .builder \
+    .master('yarn') \
+    .appName('spark-101-ml-pipeline') \
+    .config('spark.sql.shuffle.partitions', 128) \
+    .enableHiveSupport() \
+    .getOrCreate()
+
+working_db = 'z0019c3_spark_101'
+spark.sql(f"CREATE DATABASE IF NOT EXISTS {working_db} LOCATION '/user/Z0019C3/spark-101/{working_db}.db'")
+Out[1]:
+DataFrame[]
+5.2 Load the data
+In [2]:
+def pull_ad_events(spark, db, table, start_date, end_date):
+    ad_events = spark.read.table(f'{db}.{table}') \
+        .filter((psf.col('p_filedate') >= start_date) & (psf.col('p_filedate') <= end_date)) \
+        .select(
+            'creativeid',
+            psf.col('item').alias('tcin').cast(pst.IntegerType()),
+            'pagetype',
+            psf.col('p_filedate').alias('date').cast(pst.StringType()),
+            psf.col('clickstatus').cast(pst.IntegerType())
+        ) \
+        .filter(psf.col('pagetype') == 'productdetails')
+    return(ad_events)
+
+def pull_ad_descriptions(spark, db, table):
+    ad_descriptions = spark.read.table(f'{db}.{table}') \
+        .select(
+            psf.col('id').alias('creativeid'),
+            psf.col('alttext').alias('ad_description')
+        )
+    return(ad_descriptions)
+
+def pull_item_descriptions(spark, db, table):
+    item_descriptions = spark.read.table(f'{db}.{table}') \
+        .select(
+            psf.col('sku').alias('tcin').cast(pst.IntegerType()),
+            psf.col('description').alias('context_description')
+        )
+    return(item_descriptions)
+In [3]:
+# pull historical ad impressions
+ad_events = pull_ad_events(spark, 'z0019c3_dfpext_events', 'network_events', '20200301', '20200307')
+ad_events.printSchema()
+root
+ |-- creativeid: long (nullable = true)
+ |-- tcin: integer (nullable = true)
+ |-- pagetype: string (nullable = true)
+ |-- date: string (nullable = true)
+ |-- clickstatus: integer (nullable = true)
+
+In [4]:
+# pull ad descriptions for all historical ad campaigns
+ad_descriptions = pull_ad_descriptions(spark, 'prd_dfpext_fnd', 'creatives')
+ad_descriptions.printSchema()
+root
+ |-- creativeid: long (nullable = true)
+ |-- ad_description: string (nullable = true)
+
+In [5]:
+# pull item descriptions for all pdps on Target.com
+item_descriptions = pull_item_descriptions(spark, 'prd_prz_catalog', 'catalog_item_promo')
+item_descriptions.printSchema()
+root
+ |-- tcin: integer (nullable = true)
+ |-- context_description: string (nullable = true)
+
+In [6]:
+# combine ad impressions with item and ad descriptions
+ad_event_descriptions = ad_events \
+    .join(ad_descriptions, 'creativeid', 'inner') \
+    .join(item_descriptions, 'tcin', 'inner') \
+    .select('creativeid', 'tcin', 'date', 'ad_description', 'context_description', 'clickstatus') \
+    .filter(
+        (psf.length('ad_description') > 1) &
+        (psf.length('context_description') > 1)
+    )
+ad_event_descriptions.printSchema()
+print(f'total ad events: {ad_event_descriptions.count()}')
+root
+ |-- creativeid: long (nullable = true)
+ |-- tcin: integer (nullable = true)
+ |-- date: string (nullable = true)
+ |-- ad_description: string (nullable = true)
+ |-- context_description: string (nullable = true)
+ |-- clickstatus: integer (nullable = true)
+
+total ad events: 476631
+In [7]:
+print(f'original: {ad_events.rdd.getNumPartitions()}')
+print(f'after join: {ad_event_descriptions.rdd.getNumPartitions()}')
+original: 15
+after join: 128
+5.3 Exploratory Data Analysis
+5.3.1 Check for class imbalance
+In [8]:
+ad_event_descriptions.groupby('clickstatus').count().show(10, truncate = False)
++-----------+------+
+|clickstatus|count |
++-----------+------+
+|0          |431272|
+|1          |45359 |
++-----------+------+
+
+there are about 10 times as many unclicked ads as there are clicks. We might have to balance the data before training the model otherwise our model will be biased towards the negative class.
+
+5.3.2 Frequency distribution of ad ctr
+In [9]:
+ad_ctr = ad_event_descriptions \
+    .groupby('creativeid') \
+    .agg(
+        psf.avg(psf.col('clickstatus')).alias('ad_ctr'),
+        psf.count(psf.col('clickstatus')).alias('ad_count')
+    )
+ad_ctr.cache()
+
+ad_ctr.select('ad_ctr').toPandas().plot(kind = 'hist')
+
+ad_ctr_hist = ad_ctr.select('ad_ctr').rdd.flatMap(lambda x: x).histogram(20)
+ad_ctr_hist = spark.createDataFrame(list(zip(ad_ctr_hist[0], ad_ctr_hist[1])), ['ad_ctr', 'count'])
+ad_ctr_hist.show()
++-------------------+-----+
+|             ad_ctr|count|
++-------------------+-----+
+|                0.0|  775|
+|               0.05|  256|
+|                0.1|  145|
+|0.15000000000000002|   66|
+|                0.2|   49|
+|               0.25|   34|
+|0.30000000000000004|   22|
+|0.35000000000000003|   14|
+|                0.4|    8|
+|               0.45|    4|
+|                0.5|    8|
+|               0.55|    2|
+| 0.6000000000000001|    1|
+|               0.65|    1|
+| 0.7000000000000001|    0|
+|               0.75|    0|
+|                0.8|    0|
+| 0.8500000000000001|    0|
+|                0.9|    0|
+| 0.9500000000000001|    3|
++-------------------+-----+
+
+
+5.3.3 Outliers?
+In [10]:
+ad_ctr.filter(psf.col('ad_ctr') >= 0.65).orderBy(psf.col('ad_ctr').desc()).show(10, truncate = False)
++------------+------------------+--------+
+|creativeid  |ad_ctr            |ad_count|
++------------+------------------+--------+
+|138304835117|1.0               |1       |
+|138301579227|1.0               |1       |
+|138301540873|1.0               |1       |
+|138304487504|0.6896551724137931|87      |
++------------+------------------+--------+
+
+clearly we don't have enough observations for the top 3 ads that are generating 100% click through rates, so the fact that their ctr is high can purly be coincidental and might not have anything to do with the underlying data distribution. Whatever be the reason the situation warrents us to treat them as outliers. We will discard them from our training data.
+
+In [11]:
+# outlier treatment
+outliers = ad_ctr.filter(psf.col('ad_ctr') > 0.7).select('creativeid')
+
+ad_event_descriptions_wo_outliers = ad_event_descriptions \
+    .join(outliers, 'creativeid', 'left_anti')
+print(f'total ad events after removing outliers: {ad_event_descriptions_wo_outliers.count()}')
+total ad events after removing outliers: 476628
+5.4 Data Balancing
+In [12]:
+pos_class_prop = round(float(ad_event_descriptions_wo_outliers.agg(psf.avg(psf.col('clickstatus'))).collect()[0][0]), 3)
+print(f'proportion of positive class in the data: {pos_class_prop * 100}%')
+proportion of positive class in the data: 9.5%
+loss function
+
+In [13]:
+ad_event_descriptions_wo_outliers = ad_event_descriptions_wo_outliers.withColumn(
+    'class_weight',
+    psf.when(psf.col('clickstatus') == 1 , 1 - pos_class_prop).otherwise(pos_class_prop)
+)
+ad_event_descriptions_wo_outliers.show(2)
++------------+--------+--------+--------------------+--------------------+-----------+------------+
+|  creativeid|    tcin|    date|      ad_description| context_description|clickstatus|class_weight|
++------------+--------+--------+--------------------+--------------------+-----------+------------+
+|138301595201|10561256|20200305|Sponsored. Lubrid...|IT TAKES A LICKIN...|          0|       0.095|
+|138300885425|10801059|20200302|Sponsored. Neutro...|Aveeno Daily Mois...|          0|       0.095|
++------------+--------+--------+--------------------+--------------------+-----------+------------+
+only showing top 2 rows
+
+5.5 Extract Features
+5.5.1 rolling ctr features
+In [14]:
+from pyspark.sql.window import Window
+days = lambda i: i * 86400 # 86400 seconds in a day  
+ad_window = Window.partitionBy('creativeid')
+context_window = Window.partitionBy('tcin')
+
+ad_event_descriptions_ctr_features = ad_event_descriptions_wo_outliers \
+    .withColumn('unix_time', psf.to_timestamp('date', 'yyyyMMdd').cast('long')) \
+    .withColumn(
+        '15_day_rolling_ad_ctr',
+        psf.round(
+            psf.avg('clickstatus') \
+                .over(ad_window.orderBy(psf.col('unix_time')).rangeBetween(-days(15),0)),
+            5
+        )
+    ) \
+    .withColumn(
+        '15_day_rolling_context_ctr',
+        psf.round(
+            psf.avg('clickstatus') \
+                .over(context_window.orderBy(psf.col('unix_time')).rangeBetween(-days(15),0)),
+            5
+        )
+    )
+# we'll be using this dataset on multiple occasions
+# caching it will make our spark job more efficint
+ad_event_descriptions_ctr_features.cache()
+ad_event_descriptions_ctr_features.printSchema()
+ad_event_descriptions_ctr_features.show(3)
+root
+ |-- creativeid: long (nullable = true)
+ |-- tcin: integer (nullable = true)
+ |-- date: string (nullable = true)
+ |-- ad_description: string (nullable = true)
+ |-- context_description: string (nullable = true)
+ |-- clickstatus: integer (nullable = true)
+ |-- class_weight: double (nullable = false)
+ |-- unix_time: long (nullable = true)
+ |-- 15_day_rolling_ad_ctr: double (nullable = true)
+ |-- 15_day_rolling_context_ctr: double (nullable = true)
+
++------------+--------+--------+--------------------+--------------------+-----------+------------+----------+---------------------+--------------------------+
+|  creativeid|    tcin|    date|      ad_description| context_description|clickstatus|class_weight| unix_time|15_day_rolling_ad_ctr|15_day_rolling_context_ctr|
++------------+--------+--------+--------------------+--------------------+-----------+------------+----------+---------------------+--------------------------+
+|138301595201|10561256|20200305|Sponsored. Lubrid...|IT TAKES A LICKIN...|          0|       0.095|1583388000|              0.00754|                       0.0|
+|138298357850|10801059|20200301|Indulge your skin...|Aveeno Daily Mois...|          0|       0.095|1583042400|              0.00182|                       0.0|
+|138301003679|10801059|20200301|Sponsored. New at...|Aveeno Daily Mois...|          0|       0.095|1583042400|                  0.0|                       0.0|
++------------+--------+--------+--------------------+--------------------+-----------+------------+----------+---------------------+--------------------------+
+only showing top 3 rows
+
+5.5.2 text based features
+In [15]:
+from pyspark import keyword_only
+from pyspark.ml import Pipeline, PipelineModel, Transformer
+from pyspark.ml.classification import LogisticRegression
+from pyspark.ml.feature import MinMaxScaler, Normalizer, RegexTokenizer
+from pyspark.ml.feature import StopWordsRemover, VectorAssembler, Word2Vec
+from pyspark.ml.param.shared import HasInputCols, HasOutputCol, Param, Params
+from pyspark.ml.util import DefaultParamsReadable, DefaultParamsWritable
+
+from typing import Iterable
+In [16]:
+class CosineSim(
+    Transformer, HasInputCols, HasOutputCol, DefaultParamsReadable, DefaultParamsWritable, Params
+):
+    """
+    A custom Transformer to calculate cosine similarity b/w 2 vectors
+    """
+
+    @keyword_only
+    def __init__(self, inputCols: Iterable[str] = None, outputCol: str = None):
+        super(CosineSim, self).__init__()
+        kwargs = self._input_kwargs
+        self._set(**kwargs)
+
+    def _transform(self, df: DataFrame) -> DataFrame:
+        calc_dot_product = psf.udf(lambda ele: float(ele[0].dot(ele[1])), pst.DoubleType())
+        df = df.withColumn(self.getOutputCol(), calc_dot_product(psf.array(*self.getInputCols())))
+        return df
+In [17]:
+# 1. clean data and tokenize sentences
+regex_tokenizer_ad = RegexTokenizer(
+    inputCol='ad_description', outputCol='ad_tokens',
+    minTokenLength=2, toLowercase=True, pattern='\\W+'
+)
+regex_tokenizer_context = RegexTokenizer(
+    inputCol='context_description', outputCol='context_tokens',
+    minTokenLength=2, toLowercase=True, pattern='\\W+'
+)
+
+# 2. remove stopwords
+sw_remover_ad = StopWordsRemover(
+    inputCol='ad_tokens',
+    outputCol='ad_tokens_filtered',
+    caseSensitive=False
+)
+sw_remover_context = StopWordsRemover(
+    inputCol='context_tokens',
+    outputCol='context_tokens_filtered',
+    caseSensitive=False
+)
+
+# 3. create vector feature representation of ad and context tokens
+word_2_vec_ad = Word2Vec(
+    inputCol='ad_tokens_filtered', outputCol='ad_feature_vec',
+    vectorSize=50, maxSentenceLength=50,
+    windowSize=5, numPartitions=10
+)
+word_2_vec_context = Word2Vec(
+    inputCol='context_tokens_filtered', outputCol='context_feature_vec',
+    vectorSize=50, maxSentenceLength=50,
+    windowSize=5, numPartitions=10
+)
+
+# 4. L2 normalization
+normalizer_ad = Normalizer(inputCol='ad_feature_vec', outputCol='norm_ad_feature_vec', p=2.0)
+normalizer_context = Normalizer(inputCol='context_feature_vec', outputCol='norm_context_feature_vec', p=2.0)
+
+# 5. cosine similarity
+cosine_sim = CosineSim(
+    inputCols=['norm_ad_feature_vec', 'norm_context_feature_vec'],
+    outputCol='cosine_sim'
+)
+
+# 6. rolling ctrs as another stage
+
+# 7. vectorise features
+vec_assembler = VectorAssembler(
+    inputCols=[
+        '15_day_rolling_ad_ctr',
+        '15_day_rolling_context_ctr',
+        'cosine_sim'
+    ],
+    outputCol="features"
+)
+
+# 8. normalizing each feature to a range of [0, 1]
+scaler = MinMaxScaler(inputCol='features', outputCol='scaled_features', min=0.0, max=1.0)
+In [18]:
+model_prep_stages = [
+    regex_tokenizer_ad,
+    regex_tokenizer_context,
+    sw_remover_ad,
+    sw_remover_context,
+    word_2_vec_ad,
+    word_2_vec_context,
+    normalizer_ad,
+    normalizer_context,
+    cosine_sim,
+    vec_assembler,
+    scaler
+]
+In [19]:
+pipeline = Pipeline(stages=model_prep_stages)
+data = pipeline \
+    .fit(ad_event_descriptions_ctr_features) \
+    .transform(ad_event_descriptions_ctr_features)
+data.cache()
+data.printSchema()
+data.select('scaled_features', 'clickstatus').show(1, truncate = False)
+root
+ |-- creativeid: long (nullable = true)
+ |-- tcin: integer (nullable = true)
+ |-- date: string (nullable = true)
+ |-- ad_description: string (nullable = true)
+ |-- context_description: string (nullable = true)
+ |-- clickstatus: integer (nullable = true)
+ |-- class_weight: double (nullable = false)
+ |-- unix_time: long (nullable = true)
+ |-- 15_day_rolling_ad_ctr: double (nullable = true)
+ |-- 15_day_rolling_context_ctr: double (nullable = true)
+ |-- ad_tokens: array (nullable = true)
+ |    |-- element: string (containsNull = true)
+ |-- context_tokens: array (nullable = true)
+ |    |-- element: string (containsNull = true)
+ |-- ad_tokens_filtered: array (nullable = true)
+ |    |-- element: string (containsNull = true)
+ |-- context_tokens_filtered: array (nullable = true)
+ |    |-- element: string (containsNull = true)
+ |-- ad_feature_vec: vector (nullable = true)
+ |-- context_feature_vec: vector (nullable = true)
+ |-- norm_ad_feature_vec: vector (nullable = true)
+ |-- norm_context_feature_vec: vector (nullable = true)
+ |-- cosine_sim: double (nullable = true)
+ |-- features: vector (nullable = true)
+ |-- scaled_features: vector (nullable = true)
+
++---------------------------------+-----------+
+|scaled_features                  |clickstatus|
++---------------------------------+-----------+
+|[0.00754,0.0,0.44554405520140233]|0          |
++---------------------------------+-----------+
+only showing top 1 row
+
+In [22]:
+# check if the features that we have extracted are correlated with the response variable
+print(f'corr with ad_ctr: {data.stat.corr("15_day_rolling_ad_ctr", "clickstatus")}')
+print(f'corr with context_ctr: {data.stat.corr("15_day_rolling_context_ctr", "clickstatus")}')
+print(f'corr with cosine_sim: {data.stat.corr("cosine_sim", "clickstatus")}')
+corr with ad_ctr: 0.3410614603181281
+corr with context_ctr: 0.5599770723877988
+corr with cosine_sim: 0.28447699409928506
+Please refer to spark docs for all available feature extractors and transformers.
+
+5.6 Model Training
+In [23]:
+train, test = data.randomSplit([0.7, 0.3], seed = 0)
+
+lr = LogisticRegression(
+    labelCol='clickstatus', featuresCol='scaled_features', weightCol='class_weight',
+    elasticNetParam=0.7, fitIntercept = False, maxIter=3
+)
+model=lr.fit(train)
+print(model)
+LogisticRegression_467a985b211ac34f7e39
+5.7 Prediction
+In [24]:
+predict_train = model.transform(train)
+predict_test = model.transform(test)
+predict_test.select('clickstatus', 'rawPrediction', 'probability').show(10, truncate = False)
++-----------+----------------------------------------+----------------------------------------+
+|clickstatus|rawPrediction                           |probability                             |
++-----------+----------------------------------------+----------------------------------------+
+|0          |[0.8791024967035672,-0.8791024967035672]|[0.7066362018428312,0.2933637981571688] |
+|0          |[1.1670434045283435,-1.1670434045283435]|[0.7626101814787017,0.2373898185212982] |
+|0          |[0.849758058665876,-0.849758058665876]  |[0.7005163872950383,0.2994836127049617] |
+|0          |[0.8564128065716128,-0.8564128065716128]|[0.7019106423898606,0.29808935761013944]|
+|0          |[1.1185322469177852,-1.1185322469177852]|[0.7537163618402869,0.24628363815971305]|
+|0          |[0.5545463835067832,-0.5545463835067832]|[0.6351897420627888,0.36481025793721117]|
+|0          |[0.8961469057141702,-0.8961469057141702]|[0.710157047431291,0.2898429525687089]  |
+|0          |[0.7160322712666133,-0.7160322712666133]|[0.6717326985131703,0.3282673014868296] |
+|0          |[0.6388549493634115,-0.6388549493634115]|[0.6544945744988124,0.3455054255011875] |
+|0          |[1.0405567077695732,-1.0405567077695732]|[0.7389574089398452,0.26104259106015487]|
++-----------+----------------------------------------+----------------------------------------+
+only showing top 10 rows
+
+5.8 Model Evaluation
+In [26]:
+from pyspark.ml.evaluation import BinaryClassificationEvaluator
+evaluator = BinaryClassificationEvaluator(rawPredictionCol='rawPrediction', labelCol='clickstatus')
+print(f'The area under ROC for train set: {round(evaluator.evaluate(predict_train), 4)}')
+print(f'The area under ROC for test set: {round(evaluator.evaluate(predict_test), 4)}')
+The area under ROC for train set: 0.8773
+The area under ROC for test set: 0.8765
+5.9 Model tuning
+In [27]:
+from pyspark.ml.tuning import ParamGridBuilder, CrossValidator
+param_grid = ParamGridBuilder()\
+    .addGrid(lr.elasticNetParam,[0.0, 0.5, 1.0])\
+    .addGrid(lr.fitIntercept,[False, True])\
+    .addGrid(lr.maxIter,[5, 10, 100])\
+    .build()
+In [28]:
+# Create 5-fold CrossValidator
+cv = CrossValidator(estimator=lr, estimatorParamMaps=param_grid, evaluator=evaluator, numFolds=3)
+
+# Run cross validations
+cv_model = cv.fit(train)
+
+# get the predictions
+predict_train = cv_model.transform(train)
+predict_test = cv_model.transform(test)
+print(f'The area under ROC for train set with cv: {round(evaluator.evaluate(predict_train), 2)}')
+print(f'The area under ROC for test set with cv: {round(evaluator.evaluate(predict_test), 2)}')
+The area under ROC for train set with cv: 0.92
+The area under ROC for test set with cv: 0.92
+5.10 Saving and loading the E2E model pipeline
+In [29]:
+# best model
+best_model = cv_model.bestModel
+print(f'best param (elasticNetParam): {best_model._java_obj.getElasticNetParam()}')
+print(f'best param (fitIntercept): {best_model._java_obj.getFitIntercept()}')
+print(f'best param (maxIter): {best_model._java_obj.getMaxIter()}')
+best param (elasticNetParam): 0.5
+best param (fitIntercept): True
+best param (maxIter): 10
+In [30]:
+best_lr = LogisticRegression(
+    labelCol='clickstatus',
+    featuresCol='scaled_features',
+    weightCol='class_weight',
+    elasticNetParam=best_model._java_obj.getElasticNetParam(),
+    fitIntercept=best_model._java_obj.getFitIntercept(),
+    maxIter=best_model._java_obj.getMaxIter()
+)
+
+# create an E2E pipeline by combining prep stages and the model stage
+stages = [*model_prep_stages, best_lr]
+pipeline = Pipeline(stages=stages)
+
+# fit the model
+model = pipeline.fit(ad_event_descriptions_ctr_features)
+
+# save the model on disk
+model.save('/user/Z0019C3/spark-101/models')
+In [31]:
+# load the model
+reloaded_model = PipelineModel.load('/user/Z0019C3/spark-101/models')
+
+results = reloaded_model.transform(ad_event_descriptions_ctr_features)
+results.select('clickstatus', 'prediction', 'probability').show(10, truncate = False)
++-----------+----------+----------------------------------------+
+|clickstatus|prediction|probability                             |
++-----------+----------+----------------------------------------+
+|0          |0.0       |[0.9169001603415279,0.08309983965847206]|
+|0          |0.0       |[0.9094279566693549,0.09057204333064516]|
+|0          |0.0       |[0.9082601742425757,0.0917398257574243] |
+|0          |0.0       |[0.8430621444519164,0.1569378555480837] |
+|0          |0.0       |[0.8684558965649285,0.1315441034350715] |
+|0          |0.0       |[0.9182012626307918,0.08179873736920813]|
+|0          |0.0       |[0.9220409714271929,0.07795902857280705]|
+|0          |0.0       |[0.8098582007538815,0.19014179924611843]|
+|0          |0.0       |[0.8954635000617547,0.10453649993824526]|
+|0          |0.0       |[0.8192998370041881,0.18070016299581196]|
++-----------+----------+----------------------------------------+
+only showing top 10 rows
+
+5.11 Save Scores
+In [32]:
+output_table = 'click_prediction_scores'
+results.coalesce(10).write.format('parquet').mode('overwrite').saveAsTable(f'{working_db}.{output_table}')
