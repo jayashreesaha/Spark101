@@ -1,0 +1,18 @@
+Exercises Session 2
+Read the following tables from Hive:
+Sales Table - prd_sls_fnd.sls_litm
+Calendar Table - prd_cal_fnd.cal_date_dim_v
+Item Attributes Table - prd_itm_fnd.mdse_item_dim
+Join Sales table with Calendar table and perform following aggregations:
+Year on year Sales Growth for Stores, Digital and combined for past 2 years
+Distribution of monthly sales - mean, median, min, max std_dev
+Join Sales table with Item Attributes table to add the following columns:
+Division id
+Division name
+Department id
+Department name
+Aggregrate the Joined table in part 3 to identify the highest sales division last year.
+
+Analyze and figure out any possible optimizations for above joins.
+
+How to Approach the above analysis for a single division say A&A.
