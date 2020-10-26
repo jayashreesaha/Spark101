@@ -1,0 +1,33 @@
+Exercises
+Spark IO Exercise
+Read the data from the digital_orders_data.csv file. Write it back in the parquet format. Partition the data by the Item.
+Read the parquet data and write it as a CSV file. Is the partitioning preserved?
+Read the CSV file and compare it to the original CSV read. Is it the same?
+Schema definition
+Define the following schema:
+  root
+   |-- item: integer (nullable = false)
+   |-- spu: struct (nullable = false)
+   |    |-- bop: integer (nullable = false)
+   |    |-- eop: integer (nullable = true)
+   |-- forecast: array (nullable = false)
+   |    |-- element: struct (containsNull = false)
+   |    |    |-- demand: integer (nullable = false)
+   |    |    |-- probability: double (nullable = false)
+Column Operations
+Use the schema defined in the above exercise and create a DataFrame with some dummy data.
+Now, add another column to the DataFrame with the column name leadtime and a constant value of 3.
+Compute a new column spu_ratio comparing EOP and BOP. We want to know the ratio of BOP to EOP.
+Convert the above ratio to percentage spu_percentage by multiplying the ratio by 100.
+UDFs
+Create a DataFrame containing the latitudes and longitudes of two locations. The schema is as follows:
+   root
+    |-- location1: struct (nullable = false)
+    |    |-- latitude: double (nullable = false)
+    |    |-- longitude: double (nullable = false)
+    |-- location2: struct (nullable = false)
+    |    |-- latitude: double (nullable = false)
+    |    |-- longitude: double (nullable = false)
+ 
+Write a function to compute the Haversine distance between two locations.
+Use UDFs to apply this function to the DataFrame and get a column distance.
