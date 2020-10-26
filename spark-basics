@@ -1,0 +1,355 @@
+Introduction to Data Analysis with Spark
+What is Spark?
+Many cores to process my data
+Spark is a unified engine designed for large-scale distributed data processing. The core Spark API can communicate with several other APIs like the Spark SQL API for data processing, MLib for machine learning, Graph X for graph processing and Spark Streaming for real time data handling.
+
+The Spark StackThe Spark Stack
+
+Why Spark?
+Data! Lots of Data! Big Data! Hugeee Data!
+Data today has the following properties:
+
+Volume: There is a lot of data
+Velocity: The data is increasing at a fast pace
+Variety: There is data of many different kinds
+Veracity: A lot of the data is of questionable quality
+For handling this kind of data, it is not enough to have the processing power of a single machine. In today's world, having a framework like Spark which allows us to distribute the processing of this data over many machines has become imperative.
+
+Spark can be used for two cases:
+
+Scale out
+When your data is so large that it cannot be handled on a single machine, we have no choice but to perform distributed computing
+Speed up
+Even if you have smaller data that can be handled on one machine, using multiple machines can help speed up the computation if the tasks can be performed in parallel.
+How does Spark work?
+Delegation is the name of the game
+Components for Distributed Execution in Spark.pngComponenets for Distributed Execution in Spark
+
+The Spark Driver breaks up the data into small partitions, and the partitions are transferred to the Executors to perform any tasks. The Cluster Manager handles the interaction between the driver and the executors.
+
+Each executor may have one or more cores, and each of the cores will take up one partition at a time to perform the task on. All the cores on the same executor share the same resources, improving efficiency. Typically, Spark Applications should be configured to use 3 or 4 cores per executor.
+
+In [1]:
+from pyspark.sql import SparkSession
+spark = SparkSession.builder.appName('SparkBasics').getOrCreate()
+sc = spark.sparkContext
+Scala Version of the Code
+
+import org.apache.spark.sql.SparkSession val spark = SparkSession.builder.appName("SparkBasics").getOrCreate() val sc = spark.sparkContext
+The spark session is available by default in a pyspark shell (Python) or spark-shell (Scala)
+
+Resiliant Distributed Data
+The most basic data structure in Spark is RDDs or Resiliant Distributed Data.
+
+Resiliance (Fault Tolerant)
+The data transformations on RDDs are resiliant because of the usage of DAGs (Directed Acyclic Graphs) to define the stages of any job. This means that the loss of any executor requires only that executors tasks to be recomputed.
+
+Distributed
+The data is distributed across several executors
+
+In [2]:
+name_age_list = [("Brooke", 20), ("Denny", 31), ("Jules", 30), ("TD", 35), ("Brooke", 25)]
+data_rdd = sc.parallelize(name_age_list)
+data_rdd.first()
+Out[2]:
+('Brooke', 20)
+Scala Version of the Code
+
+val nameAgeList = List(("Brooke", 20), ("Denny", 31), ("Jules", 30), ("TD", 35), ("Brooke", 25)) val dataRdd = sc.parallelize(nameAgeList) dataRdd.first
+DataFrames and DataSets
+DataFrames are the most commonly used data structures in Spark. These have additional metadata on top of the RDDs, making it possible for Spark to optimize running of jobs on them.
+
+Additional information:
+
+Number of Columns
+Data types
+DataSets are the strongly-typed, immutable versions of DataFrames, closely tied to Scala Case Classes. We won't be going into more details of DataSets as a part of this course, but you can extend your learnings of DataFrames to DataSets.
+
+In [3]:
+data_df = spark.createDataFrame(name_age_list, ["name", "age"])
+data_df.show()
++------+---+
+|  name|age|
++------+---+
+|Brooke| 20|
+| Denny| 31|
+| Jules| 30|
+|    TD| 35|
+|Brooke| 25|
++------+---+
+
+Scala Version of the Code
+
+import spark.implicits._ val dataDf = nameAgeList.toDF("name", "age") dataDf.show
+RDDs vs DataFrames
+image.pngRDD vs DataFrame Performances
+
+Spark uses the metadata available about DataFrames in order to optimize the tasks to be performed on them. As a result, code written using DataFrames is much more performant.
+
+Also, while using RDDs we need to specify "How" to do the job. On the other hand, for DataFrames, simply "What" is sufficient.
+
+As a result of these, it's almost always better to use DataFrames over RDDs.
+
+Data Types in Data Frames
+Basic Types
+Data type	Value assigned in Scala	Value assigned in Python	API to instantiate
+ByteType	Byte	int	DataTypes.ByteType
+ShortType	Short	int	DataTypes.ShortType
+IntegerType	Int	int	DataTypes.IntegerType
+LongType	Long	int	DataTypes.LongType
+FloatType	Float	float	DataTypes.FloatType
+DoubleType	Double	float	DataTypes.DoubleType
+StringType	String	str	DataTypes.StringType
+BooleanType	Boolean	bool	DataTypes.BooleanType
+DecimalType	java.math.BigDecimal	decimal.Decimal	DecimalType
+Structured Types
+Data type	Value assigned in Scala	Value assigned in Python	API to instantiate in Scala	API to instantiate in Python
+BinaryType	Array[Byte]	bytearray	DataTypes.BinaryType	BinaryType()
+TimestampType	java.sql.Timestamp	datetime.datetime	DataTypes.TimestampType	TimestampType()
+DateType	java.sql.Date	datetime.date	DataTypes.DateType	DateType()
+ArrayType	scala.collection.Seq	List, tuple, or array	DataTypes.createArrayType(ElementType)	ArrayType(dataType, [nullable])
+MapType	scala.collection.Map	dict	DataTypes.createMapType(keyType, valueType)	MapType(keyType, valueType, [nullable])
+StructType	org.apache.spark.sql.Row	List or tuple	StructType(ArrayType[fieldTypes])	StructType([fields])
+StructField	A value type corresponding to the type of this field	A value type corresponding to the type of this field	StructField(name, dataType, [nullable])	StructField(name, dataType, [nullable])
+In [4]:
+# Schema of DataFrames
+
+metrics_df = spark.read.json("data/metrics.json")
+metrics_df.printSchema()
+
+# Code in Scala is equivalent
+root
+ |-- below_eop_count_stores: struct (nullable = true)
+ |    |-- max: long (nullable = true)
+ |    |-- mean: long (nullable = true)
+ |    |-- min: long (nullable = true)
+ |    |-- percentiles: struct (nullable = true)
+ |    |    |-- 0.5: long (nullable = true)
+ |    |    |-- 0.75: long (nullable = true)
+ |    |    |-- 0.98: long (nullable = true)
+ |    |-- samples: array (nullable = true)
+ |    |    |-- element: string (containsNull = true)
+ |    |-- stddev: long (nullable = true)
+ |-- ideal_inventory_position: struct (nullable = true)
+ |    |-- max: long (nullable = true)
+ |    |-- mean: double (nullable = true)
+ |    |-- min: long (nullable = true)
+ |    |-- percentiles: struct (nullable = true)
+ |    |    |-- 0.5: long (nullable = true)
+ |    |    |-- 0.75: double (nullable = true)
+ |    |    |-- 0.98: double (nullable = true)
+ |    |-- samples: array (nullable = true)
+ |    |    |-- element: string (containsNull = true)
+ |    |-- stddev: double (nullable = true)
+ |-- network_inventory: struct (nullable = true)
+ |    |-- max: long (nullable = true)
+ |    |-- mean: double (nullable = true)
+ |    |-- min: long (nullable = true)
+ |    |-- percentiles: struct (nullable = true)
+ |    |    |-- 0.5: double (nullable = true)
+ |    |    |-- 0.75: double (nullable = true)
+ |    |    |-- 0.98: double (nullable = true)
+ |    |-- samples: array (nullable = true)
+ |    |    |-- element: string (containsNull = true)
+ |    |-- stddev: double (nullable = true)
+ |-- on_hand_before_delivery: struct (nullable = true)
+ |    |-- max: long (nullable = true)
+ |    |-- mean: double (nullable = true)
+ |    |-- min: long (nullable = true)
+ |    |-- percentiles: struct (nullable = true)
+ |    |    |-- 0.5: long (nullable = true)
+ |    |    |-- 0.75: double (nullable = true)
+ |    |    |-- 0.98: double (nullable = true)
+ |    |-- samples: array (nullable = true)
+ |    |    |-- element: string (containsNull = true)
+ |    |-- stddev: double (nullable = true)
+ |-- on_hand_end_of_day: struct (nullable = true)
+ |    |-- max: long (nullable = true)
+ |    |-- mean: double (nullable = true)
+ |    |-- min: long (nullable = true)
+ |    |-- percentiles: struct (nullable = true)
+ |    |    |-- 0.5: long (nullable = true)
+ |    |    |-- 0.75: double (nullable = true)
+ |    |    |-- 0.98: double (nullable = true)
+ |    |-- samples: array (nullable = true)
+ |    |    |-- element: string (containsNull = true)
+ |    |-- stddev: double (nullable = true)
+ |-- on_order_before_delivery: struct (nullable = true)
+ |    |-- max: long (nullable = true)
+ |    |-- mean: long (nullable = true)
+ |    |-- min: long (nullable = true)
+ |    |-- percentiles: struct (nullable = true)
+ |    |    |-- 0.5: long (nullable = true)
+ |    |    |-- 0.75: long (nullable = true)
+ |    |    |-- 0.98: long (nullable = true)
+ |    |-- samples: array (nullable = true)
+ |    |    |-- element: string (containsNull = true)
+ |    |-- stddev: long (nullable = true)
+ |-- on_order_end_of_day: struct (nullable = true)
+ |    |-- max: long (nullable = true)
+ |    |-- mean: long (nullable = true)
+ |    |-- min: long (nullable = true)
+ |    |-- percentiles: struct (nullable = true)
+ |    |    |-- 0.5: long (nullable = true)
+ |    |    |-- 0.75: long (nullable = true)
+ |    |    |-- 0.98: long (nullable = true)
+ |    |-- samples: array (nullable = true)
+ |    |    |-- element: string (containsNull = true)
+ |    |-- stddev: long (nullable = true)
+ |-- received: struct (nullable = true)
+ |    |-- max: long (nullable = true)
+ |    |-- mean: long (nullable = true)
+ |    |-- min: long (nullable = true)
+ |    |-- percentiles: struct (nullable = true)
+ |    |    |-- 0.5: long (nullable = true)
+ |    |    |-- 0.75: long (nullable = true)
+ |    |    |-- 0.98: long (nullable = true)
+ |    |-- samples: array (nullable = true)
+ |    |    |-- element: string (containsNull = true)
+ |    |-- stddev: long (nullable = true)
+ |-- requested: struct (nullable = true)
+ |    |-- max: long (nullable = true)
+ |    |-- mean: double (nullable = true)
+ |    |-- min: long (nullable = true)
+ |    |-- percentiles: struct (nullable = true)
+ |    |    |-- 0.5: long (nullable = true)
+ |    |    |-- 0.75: double (nullable = true)
+ |    |    |-- 0.98: double (nullable = true)
+ |    |-- samples: array (nullable = true)
+ |    |    |-- element: string (containsNull = true)
+ |    |-- stddev: double (nullable = true)
+ |-- shipped: struct (nullable = true)
+ |    |-- max: long (nullable = true)
+ |    |-- mean: double (nullable = true)
+ |    |-- min: long (nullable = true)
+ |    |-- percentiles: struct (nullable = true)
+ |    |    |-- 0.5: long (nullable = true)
+ |    |    |-- 0.75: double (nullable = true)
+ |    |    |-- 0.98: double (nullable = true)
+ |    |-- samples: array (nullable = true)
+ |    |    |-- element: string (containsNull = true)
+ |    |-- stddev: double (nullable = true)
+ |-- stockout_count: struct (nullable = true)
+ |    |-- max: long (nullable = true)
+ |    |-- mean: double (nullable = true)
+ |    |-- min: long (nullable = true)
+ |    |-- percentiles: struct (nullable = true)
+ |    |    |-- 0.5: long (nullable = true)
+ |    |    |-- 0.75: long (nullable = true)
+ |    |    |-- 0.98: long (nullable = true)
+ |    |-- samples: array (nullable = true)
+ |    |    |-- element: string (containsNull = true)
+ |    |-- stddev: double (nullable = true)
+ |-- stockout_count_stores: struct (nullable = true)
+ |    |-- max: long (nullable = true)
+ |    |-- mean: double (nullable = true)
+ |    |-- min: long (nullable = true)
+ |    |-- percentiles: struct (nullable = true)
+ |    |    |-- 0.5: double (nullable = true)
+ |    |    |-- 0.75: double (nullable = true)
+ |    |    |-- 0.98: double (nullable = true)
+ |    |-- samples: array (nullable = true)
+ |    |    |-- element: string (containsNull = true)
+ |    |-- stddev: double (nullable = true)
+ |-- stores_requested: struct (nullable = true)
+ |    |-- max: long (nullable = true)
+ |    |-- mean: double (nullable = true)
+ |    |-- min: long (nullable = true)
+ |    |-- percentiles: struct (nullable = true)
+ |    |    |-- 0.5: double (nullable = true)
+ |    |    |-- 0.75: double (nullable = true)
+ |    |    |-- 0.98: double (nullable = true)
+ |    |-- samples: array (nullable = true)
+ |    |    |-- element: string (containsNull = true)
+ |    |-- stddev: double (nullable = true)
+ |-- total_store_inventory_position: struct (nullable = true)
+ |    |-- max: long (nullable = true)
+ |    |-- mean: double (nullable = true)
+ |    |-- min: long (nullable = true)
+ |    |-- percentiles: struct (nullable = true)
+ |    |    |-- 0.5: double (nullable = true)
+ |    |    |-- 0.75: double (nullable = true)
+ |    |    |-- 0.98: double (nullable = true)
+ |    |-- samples: array (nullable = true)
+ |    |    |-- element: string (containsNull = true)
+ |    |-- stddev: double (nullable = true)
+ |-- unfilled_requests: struct (nullable = true)
+ |    |-- max: long (nullable = true)
+ |    |-- mean: double (nullable = true)
+ |    |-- min: long (nullable = true)
+ |    |-- percentiles: struct (nullable = true)
+ |    |    |-- 0.5: long (nullable = true)
+ |    |    |-- 0.75: double (nullable = true)
+ |    |    |-- 0.98: double (nullable = true)
+ |    |-- samples: array (nullable = true)
+ |    |    |-- element: string (containsNull = true)
+ |    |-- stddev: double (nullable = true)
+
+Defining Schemas
+Sometimes, we will need to provide the schema while generating or reading DataFrames. This is especially true when we have many missing values in the data, making it difficult for Spark to infer the schema.
+
+Suppose we want to define a table with the following schema.
+
+root |-- Url: string (nullable = false) |-- Hits: integer (nullable = false) |-- Campaigns: array (nullable = false) | |-- element: string (containsNull = true)
+There are various ways of creating the schema type. We'll discuss two of them below.
+
+In [5]:
+from pyspark.sql.types import *
+
+schema = StructType([
+    StructField("Url", StringType(), False),
+    StructField("Hits", IntegerType(), False),
+    StructField("Campaigns", ArrayType(StringType(), True), False)
+])
+
+data = [
+    ["https://tinyurl.1", 4535, ["twitter", "LinkedIn"]],
+    ["https://tinyurl.2", 8908, ["twitter", "LinkedIn"]],
+    ["https://tinyurl.3", 7659, ["web", "twitter", "FB", "LinkedIn"]],
+    ["https://tinyurl.4", 10568, []]
+]
+
+df = spark.createDataFrame(data, schema)
+df.show()
+df.printSchema()
++-----------------+-----+--------------------+
+|              Url| Hits|           Campaigns|
++-----------------+-----+--------------------+
+|https://tinyurl.1| 4535| [twitter, LinkedIn]|
+|https://tinyurl.2| 8908| [twitter, LinkedIn]|
+|https://tinyurl.3| 7659|[web, twitter, FB...|
+|https://tinyurl.4|10568|                  []|
++-----------------+-----+--------------------+
+
+root
+ |-- Url: string (nullable = false)
+ |-- Hits: integer (nullable = false)
+ |-- Campaigns: array (nullable = false)
+ |    |-- element: string (containsNull = true)
+
+This way is very explicit and scalable, and can be used to create all kinds of schema. The only disadvantage is that it can get very verbose. As opposed to this, the DDL below is concise.
+
+In [6]:
+schema = "`Url` STRING NOT NULL, `Hits` INT NOT NULL, `Campaigns` ARRAY<STRING> NOT NULL"
+
+df = spark.createDataFrame(data, schema)
+df.show()
+df.printSchema()
++-----------------+-----+--------------------+
+|              Url| Hits|           Campaigns|
++-----------------+-----+--------------------+
+|https://tinyurl.1| 4535| [twitter, LinkedIn]|
+|https://tinyurl.2| 8908| [twitter, LinkedIn]|
+|https://tinyurl.3| 7659|[web, twitter, FB...|
+|https://tinyurl.4|10568|                  []|
++-----------------+-----+--------------------+
+
+root
+ |-- Url: string (nullable = false)
+ |-- Hits: integer (nullable = false)
+ |-- Campaigns: array (nullable = false)
+ |    |-- element: string (containsNull = true)
+
+Scala Version of the Code
+
+import org.apache.spark.sql.types._ import org.apache.spark.sql.Row val schema = StructType(Array( StructField("Url", StringType, false), StructField("Hits", IntegerType, false), StructField("Campaigns", ArrayType(StringType, true), false) )) val data = Seq( Row("https://tinyurl.1", 4535, List("twitter", "LinkedIn")), Row("https://tinyurl.2", 8908, List("twitter", "LinkedIn")), Row("https://tinyurl.3", 7659, List("web", "twitter", "FB", "LinkedIn")), Row("https://tinyurl.4", 10568, List()) ) val df = spark.createDataFrame(sc.parallelize(data), schema) df.show df.printSchema val schemaStr = "`Url` STRING NOT NULL, `Hits` INT NOT NULL, `Campaigns` ARRAY
