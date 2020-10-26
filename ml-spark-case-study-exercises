@@ -1,0 +1,10 @@
+Exercises
+Please refer to ml_pipeline.ipynb for the starter code and then try finishing the following exercises:
+
+Exercise 1: Implement the rolling context ctr calculation step as a transformer and include it as a stage in our pipeline object.
+
+Exercise 2: Write a custome transformer to add a new feature column to our feature dataset by taking a linear combination of 15_day_rolling_ad_ctr and 15_day_rolling_context_ctr denoted by a * 15_day_rolling_ad_ctr + b * 15_day_rolling_context_ctr. a and b should be kept as configurable parameters that can be passed while instantiating the transformer. Make sure that your custom transformer has the read and write capabilities.
+
+Exercise 3: When extracting text based features in section 5.4.2 we used word2vec method for extracting the sentence embeddings. Implement TF-IDF based vectorization method to get the sentence vector representation and then carry on with the feature extraction as presented in the rest of the section.
+
+Exercise 4: Save the pipeline object defined in section 5.4.2 and go through the model files to get a feel of what parameters and information is stored for each of the pipeline stages.
