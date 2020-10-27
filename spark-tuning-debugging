@@ -1,1 +1,320 @@
+Part I: Memory Management
+1. spark-submit command
+A typical spark-submit command that you would frequently use to submit a pyspark job looks like this:
 
+/usr/local/bin/spark-submit-2.3
+  --conf spark.pyspark.python=/home_dir/z0019c3/my_python_venvs/basic_libraries/bin/python
+  --conf spark.pyspark.driver.python=/home_dir/z0019c3/my_python_venvs/basic_libraries/bin/python
+  --master yarn
+  --deploy-mode client
+  --num-executors 10
+  --executor-cores 4
+  --driver-memory 4G 
+  --executor-memory 4G
+  my_file.py
+
+Parameter	Example	Description
+master	local	local mode can be used for the stand-alone spark installations.
+master	yarn	E-MapReduce uses the YARN mode. Set the value to yarn.
+master	yarn-client	Equivalent to setting the master parameter to yarn and the deploy-mode parameter to client. If you have set this parameter, then you do not need to set the deploy-mode parameter.
+master	yarn-cluster	Equivalent to setting the master parameter to yarn and the deploy-mode parameter to cluster. If you have set this parameter, then you do not need to set the deploy-mode parameter.
+deploy-mode	client	The client mode indicates that the ApplicationMaster (AM) of the job runs on the master node. If you set this parameter, you must also set the master parameter to yarn.
+deploy-mode	cluster	The cluster mode indicates that the AM runs randomly on one of the worker nodes. If you set this parameter, you must also set the master parameter to yarn.
+num-executors	10	The number of executors to be created.
+executor-cores	4	The number of threads used by each executor, which equals the maximum number of tasks that can be executed concurrently by each executor.
+driver-memory	4g	The memory to be allocated to the driver. The allocated memory must not be greater than total memory size per node.
+executor-memory	4g	The maximum amount of memory to be allocated to each executor. The allocated memory cannot be greater than the maximum available memory per node.
+Please refer to spark docs for more details on various spark configurations.
+
+2. Spark's memory management model
+Generally, a Spark Application includes two JVM processes, Driver and Executor. The Driver is the main control process, which is responsible for creating the Context, submitting the Job, converting the Job to Task, and coordinating the Task execution between Executors. The Executor is mainly responsible for performing specific calculation tasks and returning the results to the Driver. The memory management of Driver is relatively simple so we'll only focus on the memory management of Executors.
+
+2.1 On-Heap memory and Off-Heap memory
+Executor acts as a JVM process, and its memory management is based on the JVM. So JVM memory management includes two methods:
+
+On-Heap memory management: Objects are allocated on the JVM heap and bound by GC.
+Off-Heap memory management: Objects are allocated in memory outside the JVM by serialization, managed by the application, and are not bound by GC. This memory management method can avoid frequent GC, but the disadvantage is that you have to write the logic of memory allocation and memory release.
+In general, the objects' read and write speed is: on-heap > off-heap > disk
+
+2.2 Memory allocation
+In Spark, there are supported two memory management modes: Static Memory Manager and Unified Memory Manager.
+
+Spark provides a unified interface MemoryManager for the management of Storage memory and Execution memory. The tasks in the same Executor call the interface to apply for or release memory. Spark 1.6 and above use UnifiedMemoryManager.
+
+Static Memory Manager: Under the Static Memory Manager mechanism, the size of Storage memory, Execution memory, and other memory is fixed during the Spark application's operation, but users can configure it before the application starts. Though this allocation method has been eliminated gradually, Spark remains for compatibility reasons.
+Unified Memory Manager: The Unified Memory Manager mechanism was introduced after Spark 1.6. The difference between Unified Memory Manager and Static Memory Manager is that under the Unified Memory Manager mechanism, the Storage memory and Execution memory share a memory area, and both can occupy each other's free area.
+2.2.1 On-heap Model
+By default, Spark uses On-heap memory only. The size of the On-heap memory is configured by the –executor-memory or spark.executor.memory parameter when the Spark Application starts. The concurrent tasks running inside Executor share JVM's On-heap memory. The On-heap memory area in the Executor can be roughly divided into the following four blocks:
+
+Storage Memory: It's mainly used to store Spark cache data, such as RDD cache, Broadcast variable, Unroll data, and so on.
+Execution Memory: It's mainly used to store temporary data in the calculation process of Shuffle, Join, Sort, Aggregation, etc.
+User Memory: It's mainly used to store the data needed for RDD conversion operations, such as the information for RDD dependency.
+Reserved Memory: The memory is reserved for system and is used to store Spark's internal objects.
+On-heap model
+overhead_memory
+2.2.2 Dynamic occupancy mechanism
+When the program is submitted, the Storage memory area and the Execution memory area will be set according to the spark.memory.storageFraction parameter.
+When the program is running, if the space of both parties is not enough (the storage space is not enough to put down a complete block), it will be stored to the disk according to LRU; if one of its space is insufficient but the other is free, then it will borrow the other's space .
+Storage occupies the other party's memory, and transfers the occupied part to the hard disk, and then "return" the borrowed space.
+Execution occupies the other party's memory, and it can't make to "return" the borrowed space in the current implementation. Because the files generated by the Shuffle process will be used later, and the data in the Cache is not necessarily used later, returning the memory may cause serious performance degradation.
+3. Pyspark Data Flow
+pyspark_data_flow
+Part II: Tuning
+1. Level of Parallelism
+Much of Spark’s efficiency is due to its ability to run multiple tasks in parallel at scale. For large-scale workloads a Spark job will have many stages, and within each stage there will be many tasks. Spark will at best schedule a thread per task per core, and each task will process a distinct partition. To optimize resource utilization and maximize parallelism, the ideal is at least as many partitions as there are cores on the executor. If there are more partitions than there are cores on each executor, all the cores are kept busy.
+
+parellelism
+How partitions are created:
+
+Reading data from disk: Spark’s tasks process data as partitions read from disk into memory. Data on disk is laid out in chunks or contiguous file blocks, depending on the store. By default, file blocks on data stores range in size from 64 MB to 128 MB. For example, on HDFS the default size is 128 MB(configurable). A contiguous collection of these blocks constitutes a partition. The size of a partition in Spark is dictated by spark.sql.files.maxPartitionBytes. The default is 128 MB. You can decrease the size, but that may result in what’s known as the “small file problem” — many small partition files, introducing an inordinate amount of disk I/O and performance degradation thanks to filesystem operations such as opening, closing, and listing directories, which on a distributed filesystem can be slow. While creating a large DataFrame or reading a large file from disk, you can explicitly instruct Spark to create a certain number of partitions:
+val ds = spark.read.textFile("../README.md").repartition(16)
+ds: org.apache.spark.sql.Dataset[String] = [value: string]
+ds.rdd.getNumPartitions
+res5: Int = 16
+val numDF = spark.range(1000L * 1000 * 1000).repartition(16)
+numDF.rdd.getNumPartitions
+numDF: org.apache.spark.sql.Dataset[Long] = [id: bigint]
+res12: Int = 16
+While shuffling the data: shuffle partitions are created during the shuffle stage. By default, the number of shuffle partitions is set to 200 in spark.sql.shuffle.partitions. You can adjust this number depending on the size of the data set you have, to reduce the amount of small partitions being sent across the network to executors’ tasks. Created during operations like groupBy() or join(), shuffle partitions consume both network and disk I/O resources. There is no magic formula for the number of shuffle partitions to set for the shuffle stage; the number may vary depending on your use case, data set, number of cores, and the amount of executor memory available.
+2. Hardware Provisioning
+The main parameters that affect cluster sizing are the amount of memory given to each executor, the number of cores for each executor and the total number of executors.
+
+In all deployment modes, executor memory is set with spark.executor.memory or the --executor-memory flag to spark-submit. You can set spark.executor.cores or the --executor-cores flag and the --num-executors flag to determine the total count. Broadly speaking, Spark applications will benefit from having more memory and cores.
+
+An additional consideration when sizing a Spark application is whether you plan to cache intermediate datasets as part of your workload. If you do plan to use caching, the more of your cached data can fit in memory, the better the performance will be. The Spark storage UI will give details about what fraction of your cached data is in memory. One approach is to start by caching a subset of your data on a smaller cluster and extrapolate the total memory you will need to fit larger amounts of the data in memory.
+
+In addition to scaling Spark for large workloads, to boost your performance you’ll want to consider caching or persisting your frequently accessed DataFrames or tables.
+
+3. Static versus dynamic resource allocation
+When you specify compute resources as command-line arguments to spark-submit, you cap the limit. This means that if more resources are needed later as tasks queue up in the driver due to a larger than anticipated workload, Spark can‐ not accommodate or allocate extra resources. If instead you use Spark’s dynamic resource allocation configuration, the Spark driver can request more or fewer compute resources as the demand of large workloads flows and ebbs. In scenarios where your workloads are dynamic—that is, they vary in their demand for compute capacity—using dynamic allocation helps to accommodate sudden peaks.
+
+To enable and configure dynamic allocation, you can use settings like the following:
+
+spark.dynamicAllocation.enabled true
+
+spark.dynamicAllocation.minExecutors 2
+
+spark.dynamicAllocation.maxExecutors 20
+
+By default spark.dynamicAllocation.enabled is set to false. When enabled with the settings shown above, the Spark driver will request that the cluster manager create two executors to start with (spark.dynamicAllocation.minExecutors). As the task queue backlog increases, the driver will request that a new executor be launched to schedule backlogged tasks, up to a maximum of 20 (spark.dynamicAllocation.maxExecu
+tors).
+
+4. Dealing with OOM issues
+Out of memory errors are the most common errors that spark jobs run into if not tuned properly.
+
+Common causes which result in driver OOM are:
+
+Collecting too much data into driver by using df.collect().
+Low driver memory configured as per the application requirements.
+Broadcasting too much data.
+Misconfiguration of spark.sql.autoBroadcastJoinThreshold. Spark uses this limit to broadcast a relation to all the nodes in case of a join operation. At the very first usage, the whole relation is materialized at the driver node. Sometimes multiple tables are also broadcasted as part of the query execution.
+
+Try to write your application in such a way that you can avoid all explicit result collection at the driver. Eg. We can consider writing results to file rather than collecting at driver.
+
+Common driver OOM errors and resolutions:
+
+Driver running out of memory:
+
+Exception in thread "broadcast-exchange-0" java.lang.OutOfMemoryError: Not enough memory to build and broadcast the table to all worker nodes. As a workaround, you can either disable broadcast by setting spark.sql.autoBroadcastJoinThreshold to -1 or increase the spark driver memory by setting spark.driver.memory to a higher value.
+As suggested in the error message, either increase the driver memory or configure the autoBroadcastJoinThreshold variable appropriately.
+Application Master(YARN) that launches the driver exceeds memory limits:
+
+Diagnostics: Container [[pid=\<XXXXX>,containerID=container\<XXXXXXXXXX>\<XXXX>\<XX>\<XXXXXX>]] is running beyond physical memory limits. Current usage: \<XX> GB of \<XX> GB physical memory used; \<XX> GB of \<XX> GB virtual memory used. Killing container
+Increase the driver memory, as a result AM memory limit gets increased.
+Common causes which result in executor OOM are:
+
+Inefficient queries while reading data from tables. Try to read as few columns as possible. Try to use filters wherever possible.
+Memory Overhead: Sometimes it's not executor memory, rather its YARN container memory overhead that causes OOM or the node gets killed by YARN. YARN runs each Spark component like executors and drivers inside containers. Overhead memory is the off-heap memory used for JVM overheads, interned strings and other metadata of JVM. In this case, you need to configure spark.executor.memoryOverhead to a proper value.
+Common executor OOM errors and resolutions:
+
+Executor running out of memory:
+
+Executor task launch worker for task XXXXXX ERROR Executor: Exception in task XX.X in stage X.X (TID XXXXXX) java.lang.OutOfMemoryError: GC overhead limit exceeded
+Increase the executor memory
+FetchFailedException:
+
+ShuffleMapStage XX (sql at SqlWrapper.scala:XX) failed in X.XXX s due to org.apache.spark.shuffle.FetchFailedException: failed to allocate XXXXX byte(s) of direct memory (used: XXXXX, max: XXXXX)
+Either increase the executor memory or increase the number of shuffle partitions(using --spark.sql.shuffle.partitions).
+Executor container killed by YARN for exceeding memory limits:
+
+org.apache.spark.SparkException: Job aborted due to stage failure: Task X in stage X.X failed X times, most recent failure: Lost task X.X in stage X.X (TID XX, XX.XX.X.XXX, executor X): ExecutorLostFailure(executor X exited caused by one of the running tasks) Reason: Container killed by YARN for exceeding memory limits. XX.X GB of XX.X GB physical memory used. Consider boosting spark.yarn.executor.memoryOverhead
+Increase the executor memory and/or memory overhead(using spark.executor.memoryOverhead) accordingly. If increasing the overhead memory doesn't resolve the issue then try to reduce the number of cores(--executor-cores). If this also doesn't help then try to increase the number of partitions(using .repartition()).
+As a summary, consider one/more of the following methods to resolve OOM errors:
+
+Increase driver and executor memory
+Increase memory overhead
+Reduce the number of executor cores
+Increase the number of partitions
+Part III: Web UI
+Apache Spark provides a suite of web user interfaces (UIs) that you can use to monitor the status and resource consumption of your Spark cluster.
+
+1. Environment Tab
+The Environment tab displays the values for the different environment and configuration variables, including JVM, Spark, and system properties.
+
+This environment page has five parts. It is a useful place to check whether your properties have been set correctly. The first part 'Runtime Information' simply contains the runtime properties like versions of Java and Scala. The second part 'Spark Properties' lists the application properties like 'spark.app.name' and 'spark.driver.memory'.
+
+Env tab
+Hadoop Properties
+Clicking the 'Hadoop Properties' link displays properties relative to Hadoop and YARN. Note that properties like 'spark.hadoop.*' are shown not in this part but in 'Spark Properties'.
+
+System Properties'System Properties' shows more details about the JVM.
+Classpath Entries
+The last part 'Classpath Entries' lists the classes loaded from different sources, which is very useful to resolve class conflicts.
+
+2. Jobs Tab
+The Jobs tab displays a summary page of all jobs in the Spark application and a details page for each job. The summary page shows high-level information, such as the status, duration, and progress of all jobs and the overall event timeline. When you click on a job on the summary page, you see the details page for that job. The details page further shows the event timeline, DAG visualization, and all stages of the job.
+
+The information that is displayed in this section is
+
+User: Current Spark user
+Total uptime: Time since Spark application started
+Scheduling mode: FIFO, LIFO
+Number of jobs per status: Active, Completed, Failed
+Basic info
+Event timeline: Displays in chronological order the events related to the executors (added, removed) and the jobs
+Event timeline
+Details of jobs grouped by status: Displays detailed information of the jobs including Job ID, description (with a link to detailed job page), submitted time, duration, stages summary and tasks progress bar
+Details of jobs grouped by status
+When you click on a specific job, you can see the detailed information of this job.
+
+Jobs detail
+This page displays the details of a specific job identified by its job ID.
+
+Job Status: (running, succeeded, failed)
+Number of stages per status (active, pending, completed, skipped, failed)
+Associated SQL Query: Link to the sql tab for this job
+Event timeline: Displays in chronological order the events related to the executors (added, removed) and the stages of the job
+Event timeline
+DAG visualization: Visual representation of the directed acyclic graph of this job where vertices represent the RDDs or DataFrames and the edges represent an operation to be applied on RDD.
+An example of DAG visualization for sc.parallelize(1 to 100).toDF.count()
+DAG
+List of stages (grouped by state active, pending, completed, skipped, and failed)
+Stage ID
+Description of the stage
+Submitted timestamp
+Duration of the stage
+Tasks progress bar
+Input: Bytes read from storage in this stage
+Output: Bytes written in storage in this stage
+Shuffle read: Total shuffle bytes and records read, includes both data read locally and data read from remote executors
+Shuffle write: Bytes and records written to disk in order to be read by a shuffle in a future stage
+DAG
+3. Stages Tab
+The Stages tab displays a summary page that shows the current state of all stages of all jobs in the Spark application.
+
+At the beginning of the page is the summary with the count of all stages by status (active, pending, completed, skipped, and failed)
+
+Stages header
+After that are the details of stages per status (active, pending, completed, skipped, failed). In active stages, it's possible to kill the stage with the kill link. Only in failed stages, failure reason is shown. Task detail can be accessed by clicking on the description.
+
+Stages detail
+Stage detail
+The stage detail page begins with information like total time across all tasks, Locality level summary, Shuffle Read Size / Records and Associated Job IDs.
+
+Stage header
+There is also a visual representation of the directed acyclic graph (DAG) of this stage, where vertices represent the RDDs or DataFrames and the edges represent an operation to be applied. Nodes are grouped by operation scope in the DAG visualization and labelled with the operation scope name (BatchScan, WholeStageCodegen, Exchange, etc). Notably, Whole Stage Code Generation operations are also annotated with the code generation id. For stages belonging to Spark DataFrame or SQL execution, this allows to cross-reference Stage execution details to the relevant details in the Web-UI SQL Tab page where SQL plan graphs and execution plans are reported.
+
+Stage DAG
+Summary metrics for all task are represented in a table and in a timeline.
+
+Tasks deserialization time.
+Duration of tasks.
+GC time is the total JVM garbage collection time.
+Result serialization time is the time spent serializing the task result on an executor before sending it back to the driver.
+Getting result time is the time that the driver spends fetching task results from workers.
+Scheduler delay is the time the task waits to be scheduled for execution.
+Peak execution memory is the maximum memory used by the internal data structures created during shuffles, aggregations and joins.
+Shuffle Read Size / Records. Total shuffle bytes read, includes both data read locally and data read from remote executors.
+Shuffle Read Blocked Time is the time that tasks spent blocked waiting for shuffle data to be read from remote machines.
+Shuffle Remote Reads is the total shuffle bytes read from remote executors.
+Shuffle Write Time is the time that tasks spent writing shuffle data.
+Shuffle spill (memory) is the size of the deserialized form of the shuffled data in memory.
+Shuffle spill (disk) is the size of the serialized form of the data on disk.
+Stages metrics
+Aggregated metrics by executor show the same information aggregated by executor.
+
+Stages metrics per executors
+Tasks details basically includes the same information as in the summary section but detailed by task. It also includes links to review the logs and the task attempt number if it fails for any reason.
+
+Tasks
+4. Storage Tab
+The Storage tab displays the persisted RDDs and DataFrames, if any, in the application. The summary page shows the storage levels, sizes and partitions of all RDDs, and the details page shows the sizes and using executors for all partitions in an RDD or DataFrame.
+
+scala> import org.apache.spark.storage.StorageLevel._
+import org.apache.spark.storage.StorageLevel._
+
+scala> val rdd = sc.range(0, 100, 1, 5).setName("rdd")
+rdd: org.apache.spark.rdd.RDD[Long] = rdd MapPartitionsRDD[1] at range at <console>:27
+
+scala> rdd.persist(MEMORY_ONLY_SER)
+res0: rdd.type = rdd MapPartitionsRDD[1] at range at <console>:27
+
+scala> rdd.count
+res1: Long = 100                                                                
+
+scala> val df = Seq((1, "andy"), (2, "bob"), (2, "andy")).toDF("count", "name")
+df: org.apache.spark.sql.DataFrame = [count: int, name: string]
+
+scala> df.persist(DISK_ONLY)
+res2: df.type = [count: int, name: string]
+
+scala> df.count
+res3: Long = 3
+Storage tab
+After running the above example, we can find two RDDs listed in the Storage tab. Basic information like storage level, number of partitions and memory overhead are provided. Note that the newly persisted RDDs or DataFrames are not shown in the tab before they are materialized. To monitor a specific RDD or DataFrame, make sure an action operation has been triggered.
+
+Storage detail
+You can click the RDD name 'rdd' for obtaining the details of data persistence, such as the data distribution on the cluster.
+
+5. Executors Tab
+The Executors tab displays summary information about the executors that were created for the application, including memory and disk usage and task and shuffle information. The Storage Memory column shows the amount of memory used and reserved for caching data.
+
+Executors Tab
+The Executors tab provides not only resource information (amount of memory, disk, and cores used by each executor) but also performance information (GC time and shuffle information).
+
+Stderr Log
+Clicking the 'stderr' link of executor 0 displays detailed standard error log in its console.
+
+6. SQL Optimization
+spark_sql_optimization
+7. SQL Tab
+If the application executes Spark SQL queries, the SQL tab displays information, such as the duration, jobs, and physical and logical plans for the queries. Here we include a basic example to illustrate this tab:
+
+scala> val df = Seq((1, "andy"), (2, "bob"), (2, "andy")).toDF("count", "name")
+df: org.apache.spark.sql.DataFrame = [count: int, name: string]
+
+scala> df.count
+res0: Long = 3                                                                  
+
+scala> df.createGlobalTempView("df")
+
+scala> spark.sql("select name,sum(count) from global_temp.df group by name").show
++----+----------+
+|name|sum(count)|
++----+----------+
+|andy|         3|
+| bob|         2|
++----+----------+
+SQL tab
+Now the above three dataframe/SQL operators are shown in the list. If we click the 'show at \<console>: 24' link of the last query, we will see the DAG and details of the query execution.
+
+SQL DAG
+The query details page displays information about the query execution time, its duration, the list of associated jobs, and the query execution DAG. The first block 'WholeStageCodegen (1)' compiles multiple operators ('LocalTableScan' and 'HashAggregate') together into a single Java function to improve performance, and metrics like number of rows and spill size are listed in the block. The annotation '(1)' in the block name is the code generation id. The second block 'Exchange' shows the metrics on the shuffle exchange, including number of written shuffle records, total data size, etc.
+
+logical plans and the physical planClicking the 'Details' link on the bottom displays the logical plans and the physical plan, which illustrate how Spark parses, analyzes, optimizes and performs the query. Steps in the physical plan subject to whole stage code generation optimization, are prefixed by a star followed by the code generation id, for example: '*(1) LocalTableScan'
+Note: We can get the same sql query plan by using df.explain() command within the code.
+
+SQL metrics
+The metrics of SQL operators are shown in the block of physical operators. The SQL metrics can be useful when we want to dive into the execution details of each operator. For example, "number of output rows" can answer how many rows are output after a Filter operator, "shuffle bytes written total" in an Exchange operator shows the number of bytes written by a shuffle.
+
+Here is the list of SQL metrics:
+
+SQL metrics	Meaning	Operators
+number of output rows	the number of output rows of the operator	Aggregate operators, Join operators, Sample, Range, Scan operators, Filter, etc.
+data size	the size of broadcast/shuffled/collected data of the operator	BroadcastExchange, ShuffleExchange, Subquery
+time to collect	the time spent on collecting data	BroadcastExchange, Subquery
+shuffle bytes written	the number of bytes written	CollectLimit, TakeOrderedAndProject, ShuffleExchange
+shuffle records written	the number of records written	CollectLimit, TakeOrderedAndProject, ShuffleExchange
+shuffle write time	the time spent on shuffle writing	CollectLimit, TakeOrderedAndProject, ShuffleExchange
+records read	the number of read records	CollectLimit, TakeOrderedAndProject, ShuffleExchange
+sort time	the time spent on sorting	Sort
